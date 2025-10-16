@@ -36,7 +36,7 @@ resource "cloudflare_dns_record" "n8n_record" {
 
 // create application routes for tunnel
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "gcp_tunnel_config" {
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.gcp_tunnel.id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
   account_id = data.cloudflare_zones.this.result[0].account.id
   config = {
     ingress = [
