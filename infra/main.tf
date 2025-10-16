@@ -35,7 +35,7 @@ resource "cloudflare_dns_record" "n8n_record" {
 }
 
 // create application routes for tunnel
-resource "cloudflare_zero_trust_tunnel_cloudflared_config" "gcp_tunnel_config" {
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
   account_id = data.cloudflare_zones.this.result[0].account.id
   config = {
@@ -56,6 +56,5 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "gcp_tunnel_config" {
 }
 
 output "cloudflare_tunnel_token" {
-  value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
-  sensitive = true
+  value = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
 }
