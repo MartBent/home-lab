@@ -18,7 +18,7 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "tunnel_token" {
 // create CNAME records for the tunnel
 resource "cloudflare_dns_record" "homeassistant_record" {
   zone_id = data.cloudflare_zones.this.result[0].id
-  name    = var.homeassistant_hostname
+  name    = var.homeassistant_prefix
   content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
@@ -27,7 +27,7 @@ resource "cloudflare_dns_record" "homeassistant_record" {
 
 resource "cloudflare_dns_record" "n8n_record" {
   zone_id = data.cloudflare_zones.this.result[0].id
-  name    = var.n8n_hostname
+  name    = var.n8n_prefix
   content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
