@@ -1,8 +1,10 @@
+# macOS
+.DS_Store
+
 # ---- Terraform ----
 **/.terraform/
 *.tfstate
 *.tfstate.*
-crash.log
 crash.*.log
 override.tf
 override.tf.json
@@ -13,38 +15,26 @@ terraform.tfvars
 !.terraform.lock.hcl
 !*.tfvars.example
 
-# ---- Docker & Env files ----
+# ---- Env files ----
 .env
 .env.*
-docker/.env
-docker/.env.*
-infra/.env
-infra/.env.*
-!infra/.env.example
 
+# ---- Docker ----
 docker/docker-compose.override.yml
 
-# Volume/data directories (do not commit runtime data)
+# Volume/data directories (runtime data)
 docker/services/homeassistant/config/**
 docker/services/pihole/etc-pihole/**
 docker/services/pihole/etc-dnsmasq.d/**
 docker/services/n8n/data/**
-# Keep placeholders if present
 !docker/services/**/.gitkeep
 
-# ---- OS / Editor junk ----
-.DS_Store
-.AppleDouble
-.LSOverride
-Thumbs.db
-Desktop.ini
-
-# IDE / Editors
+# ---- IDE / Editors ----
 .vscode/
 .idea/
 .history
 
-# Swap / temp
+# ---- Temp files ----
 *.swp
 *.swo
 *~

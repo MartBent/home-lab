@@ -1,6 +1,6 @@
 // get any available domain that has martbent.com in the name
 data "cloudflare_zones" "this" {
-  name = "martbent.com"
+  name = var.cloudflare_domain_name
 }
 
 // create a tunnel for the domain
@@ -34,11 +34,28 @@ resource "cloudflare_dns_record" "n8n_record" {
   proxied = true
 }
 
-output "cloudflare_zone" {
-  value = data.cloudflare_zones.this.result[0]
+// create application routes for tunnel
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "gcp_tunnel_config" {
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.gcp_tunnel.id
+  account_id = data.cloudflare_zones.this.result[0].account.id
+  config = {
+    ingress = [
+      {
+        hostname = "${var.homeassistant_prefix}.${var.cloudflare_domain_name}"
+        service  = "http://${var.host_local_ip}:8123"
+      },
+      {
+        hostname = "${var.n8n_prefix}.${var.cloudflare_domain_name}"
+        service  = "http://${var.host_local_ip}:5678"
+      },
+      {
+        service = "http_status:404"
+      }
+    ]
+  }
 }
 
-// output the token used to run the tunnel service
 output "cloudflare_tunnel_token" {
-  value = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
+  value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
+  sensitive = true
 }
