@@ -49,6 +49,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
         service  = "http://${var.host_local_ip}:5678"
       },
       {
+        hostname = "${var.drive_prefix}.${var.cloudflare_domain_name}"
+        service  = "https://${var.host_local_ip}"
+      },
+      {
         service = "http_status:404"
       }
     ]

@@ -10,6 +10,9 @@ variable "homeassistant_prefix" {
 variable "n8n_prefix" {
   type = string
 }
+variable "drive_prefix" {
+  type = string
+}
 variable "cloudflare_tunnel_name" {
   type = string
 }
