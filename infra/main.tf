@@ -33,14 +33,6 @@ resource "cloudflare_dns_record" "n8n_record" {
   ttl     = 1
   proxied = true
 }
-resource "cloudflare_dns_record" "drive_record" {
-  zone_id = data.cloudflare_zones.this.result[0].id
-  name    = var.drive_prefix
-  content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
-  type    = "CNAME"
-  ttl     = 1
-  proxied = true
-}
 
 // create application routes for tunnel
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
@@ -55,10 +47,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
       {
         hostname = "${var.n8n_prefix}.${var.cloudflare_domain_name}"
         service  = "http://${var.host_local_ip}:5678"
-      },
-      {
-        hostname = "${var.drive_prefix}.${var.cloudflare_domain_name}"
-        service  = "https://${var.host_local_ip}"
       },
       {
         service = "http_status:404"
