@@ -1,6 +1,10 @@
 variable "host_local_ip" {
   type = string
 }
+variable "docker_host" {
+  type    = string
+  default = "unix://var/run/docker.sock"
+}
 variable "cloudflare_api_token" {
   type = string
 }
