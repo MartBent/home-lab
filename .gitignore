@@ -19,16 +19,6 @@ terraform.tfvars
 .env
 .env.*
 
-# ---- Docker ----
-docker/docker-compose.override.yml
-
-# Volume/data directories (runtime data)
-docker/services/homeassistant/config/**
-docker/services/pihole/etc-pihole/**
-docker/services/pihole/etc-dnsmasq.d/**
-docker/services/n8n/data/**
-!docker/services/**/.gitkeep
-
 # ---- IDE / Editors ----
 .vscode/
 .idea/

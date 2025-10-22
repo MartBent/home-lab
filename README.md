@@ -1,69 +1,73 @@
-# HomeLab
+# HomeLab (Terraform only)
 
-This repo contains:
-- Docker Compose services: HomeAssistant, Pi-hole, n8n, and Cloudflared (host networking)
-- Terraform config to create a Cloudflare Zero Trust tunnel and DNS records
+Infrastructure-as-code for a small homelab, managed entirely with Terraform. It provisions:
+- Cloudflare Zero Trust Tunnel
+- DNS CNAME records for service subdomains
+- A modular ingress configuration for routing tunnel traffic to local services
 
 ## Prerequisites
-- Docker and Docker Compose
 - Terraform >= 1.5
 - Cloudflare API token with permissions:
   - Account: Zero Trust Tunnel: Read & Edit
   - Zone: DNS: Read & Edit
 
-## Structure
-- `docker/docker-compose.yml` – services with `network_mode: host`
-- `docker/.env.example` – sample environment for Docker
-- `infra/` – Terraform for Cloudflare (tunnel + DNS)
+## Repository structure
+- `infra/` – Terraform for Cloudflare (providers, variables, tunnel, DNS)
+  - `main.tf` – tunnel, config, outputs
+  - `homeassistant.tf`, `n8n.tf`, `synology_drive.tf` – per‑service DNS + ingress
+  - `providers.tf`, `variables.tf`, `locals.tf` – providers, inputs, and shared IDs
 
-## 1) Configure Docker
-Copy and edit the env file:
-```bash
-cp docker/.env.example docker/.env
-# edit TZ, PIHOLE_WEBPASSWORD
-# leave CLOUDFLARED_TUNNEL_TOKEN empty for now
-```
-
-## 2) Provision Cloudflare with Terraform
-Set variables via `terraform.tfvars` or CLI vars. Provider uses `var.cloudflare_api_token`.
-
-Example `infra/terraform.tfvars`:
+## Usage
+Create `infra/terraform.tfvars` (example):
 ```hcl
-cloudflare_api_token    = "<your token>"
-host_local_ip           = "192.168.2.20"
-homeassistant_hostname  = "homelab_homeassistant"
-n8n_hostname            = "homelab_n8n"
-cloudflare_tunnel_name  = "HomeLab Tunnel"
+cloudflare_api_token   = "<your token>"
+cloudflare_domain_name = "example.com"
+cloudflare_tunnel_name = "homelab-tunnel"
+host_local_ip          = "192.168.1.10"
+homeassistant_prefix   = "ha"
+n8n_prefix             = "n8n"
+drive_prefix           = "drive"
 ```
 
-Apply:
+Initialize and apply:
 ```bash
 terraform -chdir=infra init
-terraform -chdir=infra apply -auto-approve
+terraform -chdir=infra apply
 ```
 
-After apply, retrieve the tunnel token:
-```bash
-terraform -chdir=infra output -raw cloudflare_tunnel_token
+Outputs:
+- `cloudflare_tunnel_token` (sensitive) – token for a Cloudflared connector, if/when you choose to run one.
+
+## Modular ingress pattern
+Each service file defines a local ingress list and its DNS record.
+
+Example (`infra/homeassistant.tf`):
+```20:31:/Users/mart.bent/Private/Git/homelab/infra/homeassistant.tf
+locals {
+  ingress_homeassistant = [
+    {
+      hostname = "${var.homeassistant_prefix}.${var.cloudflare_domain_name}"
+      service  = "http://${var.host_local_ip}:8123"
+    }
+  ]
+}
 ```
-Paste this value into `docker/.env` as `CLOUDFLARED_TUNNEL_TOKEN`.
 
-Notes:
-- Two CNAME records are created pointing to the tunnel for the provided hostnames.
-
-## 3) Launch services
-```bash
-docker compose -f docker/docker-compose.yml up -d
+The tunnel config concatenates all service ingress locals and appends a default 404 rule:
+```18:33:/Users/mart.bent/Private/Git/homelab/infra/main.tf
+ingress = concat(
+  local.ingress_homeassistant,
+  local.ingress_n8n,
+  local.ingress_drive,
+  [
+    {
+      service = "http_status:404"
+    }
+  ]
+)
 ```
 
-Services (host networking):
-- HomeAssistant: http://127.0.0.1:8123
-- Pi-hole Admin: http://127.0.0.1/admin
-- n8n: http://127.0.0.1:5678
-- Cloudflared: runs the Cloudflare connector; requires `CLOUDFLARED_TUNNEL_TOKEN` in `docker/.env`
-
-### Cloudflared service
-- Image: `cloudflare/cloudflared:latest`
-- Networking: host
-- Command: `tunnel --no-autoupdate run`
-- Configure by setting `CLOUDFLARED_TUNNEL_TOKEN` from Terraform output
+To add a new service:
+1. Create `infra/<service>.tf` with its DNS record and `locals { ingress_<service> = [...] }`.
+2. Append `local.ingress_<service>` to the `concat` list in `infra/main.tf`.
+3. Run `terraform apply`.

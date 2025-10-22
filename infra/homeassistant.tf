@@ -1,8 +1,8 @@
 // setup CNAME reccord for external access
 resource "cloudflare_dns_record" "homeassistant_record" {
-  zone_id = data.cloudflare_zones.this.result[0].id
+  zone_id = local.zone_id
   name    = var.homeassistant_prefix
-  content = "${cloudflare_zero_trust_tunnel_cloudflared.this.id}.cfargotunnel.com"
+  content = "${local.tunnel_id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
   proxied = true

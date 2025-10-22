@@ -1,4 +1,4 @@
-// get any available domain that has martbent.com in the name
+// get any available domain that has "cloudflare_domain_name" in the name
 data "cloudflare_zones" "this" {
   name = var.cloudflare_domain_name
 }
@@ -6,19 +6,19 @@ data "cloudflare_zones" "this" {
 // create a tunnel for the domain
 resource "cloudflare_zero_trust_tunnel_cloudflared" "this" {
   name       = var.cloudflare_tunnel_name
-  account_id = data.cloudflare_zones.this.result[0].account.id
+  account_id = local.account_id
 }
 
 // retrieve the tunnel token
 data "cloudflare_zero_trust_tunnel_cloudflared_token" "tunnel_token" {
-  account_id = data.cloudflare_zones.this.result[0].account.id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
+  account_id = local.account_id
+  tunnel_id  = local.tunnel_id
 }
 
 // create application routes for tunnel
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.this.id
-  account_id = data.cloudflare_zones.this.result[0].account.id
+  tunnel_id  = local.tunnel_id
+  account_id = local.account_id
   config = {
     ingress = concat(
       local.ingress_homeassistant,
@@ -34,5 +34,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
 }
 
 output "cloudflare_tunnel_token" {
-  value = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
+  value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
+  sensitive = true
 }
