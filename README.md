@@ -115,22 +115,3 @@ resource "docker_container" "n8n" {
   ]
 }
 ```
-
-## Modular ingress pattern
-Each service file defines a local ingress list and its DNS record. Example:
-```11:19:/Users/mart.bent/Private/Git/homelab/homeassistant.tf
-locals {
-  ingress_homeassistant = [
-    {
-      hostname = "${var.homeassistant_prefix}.${var.cloudflare_domain_name}"
-      service  = "http://${var.host_local_ip}:8123"
-    }
-  ]
-}
-```
-
-To add a new service:
-1. Create `<service>.tf` with its DNS record and `locals { ingress_<service> = [...] }`.
-2. Append `local.ingress_<service>` to the `ingress` concat in `cloudflare.tf`.
-3. Add Docker image/container resources if applicable.
-4. Run `terraform apply`.
