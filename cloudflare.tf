@@ -47,7 +47,5 @@ resource "docker_container" "cloudflared" {
   name         = "cloudflared"
   network_mode = "host"
   restart      = "unless-stopped"
-  env = [
-    "TUNNEL_TOKEN= ${data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token}"
-  ]
+  command      = ["tunnel", "run", "--token", data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token]
 }
