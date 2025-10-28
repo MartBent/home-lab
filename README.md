@@ -1,4 +1,4 @@
-# HomeLab (Terraform-managed Cloudflare + Docker)
+# HomeLab
 
 Infrastructure-as-code for a small homelab, managed entirely with Terraform. It provisions:
 - Cloudflare Zero Trust Tunnel and DNS
@@ -11,14 +11,14 @@ Infrastructure-as-code for a small homelab, managed entirely with Terraform. It 
   - Account: Zero Trust Tunnel: Read & Edit
   - Zone: DNS: Read & Edit
 
-## Repository structure (root Terraform)
+## Structure
 - `providers.tf` – providers (Cloudflare, Docker)
 - `variables.tf` – input variables
 - `locals.tf` – shared Cloudflare IDs (account_id, zone_id, tunnel_id)
 - `cloudflare.tf` – Cloudflare tunnel, config, output, Cloudflared container
 - `homeassistant.tf` – Home Assistant DNS, ingress, Docker image/container
 - `n8n.tf` – n8n DNS, ingress, Docker image/container
-- `synology_drive.tf` – Synology Drive DNS, ingress
+- `synology_drive.tf` – Synology Drive DNS
 
 ## Configuration
 Create `terraform.tfvars` in repo root (example):
@@ -46,9 +46,6 @@ Initialize and apply from repo root:
 terraform init
 terraform apply
 ```
-
-Outputs:
-- `cloudflare_tunnel_token` (sensitive) – used by the Cloudflared connector container.
 
 ## What gets created
 - Cloudflare Tunnel and DNS CNAMEs for service subdomains.
