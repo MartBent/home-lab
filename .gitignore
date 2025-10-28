@@ -18,6 +18,7 @@ terraform.tfvars
 # ---- Env files ----
 .env
 .env.*
+!.env.example
 
 # ---- IDE / Editors ----
 .vscode/

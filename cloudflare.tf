@@ -37,3 +37,17 @@ output "cloudflare_tunnel_token" {
   value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
   sensitive = true
 }
+
+resource "docker_image" "cloudflared" {
+  name = "cloudflare/cloudflared:latest"
+}
+
+resource "docker_container" "cloudflared" {
+  image        = docker_image.cloudflared.name
+  name         = "cloudflared"
+  network_mode = "host"
+  restart      = "unless-stopped"
+  env = [
+    "TUNNEL_TOKEN= ${data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token}"
+  ]
+}

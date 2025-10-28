@@ -11,9 +11,17 @@ variable "homeassistant_prefix" {
   default  = "ha"
   nullable = false
 }
+variable "homeassistant_config_path" {
+  type     = string
+  nullable = false
+}
 variable "n8n_prefix" {
   type     = string
   default  = "n8n"
+  nullable = false
+}
+variable "n8n_data_path" {
+  type     = string
   nullable = false
 }
 variable "drive_prefix" {
