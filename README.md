@@ -21,7 +21,7 @@ Infrastructure-as-code for a small homelab, managed entirely with Terraform. It 
 - `synology_drive.tf` – Synology Drive DNS
 
 ## Configuration
-Create `terraform.tfvars` in repo root (example):
+Create `terraform.tfvars` (example):
 ```hcl
 cloudflare_api_token   = "<your token>"
 cloudflare_domain_name = "example.com"
@@ -41,10 +41,9 @@ n8n_data_path              = "/srv/n8n/data"
 # docker_host = "unix:///var/run/docker.sock"
 ```
 
-Initialize and apply from repo root:
+Initialize and apply:
 ```bash
-terraform init
-terraform apply
+terraform init && terraform apply
 ```
 
 ## What gets created
