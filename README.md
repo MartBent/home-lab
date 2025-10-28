@@ -1,4 +1,4 @@
-# HomeLab
+# Home Lab
 
 Infrastructure-as-code for a small homelab, managed entirely with Terraform. It provisions:
 - Cloudflare Zero Trust Tunnel and DNS
