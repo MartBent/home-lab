@@ -41,22 +41,27 @@ n8n_data_path              = "/srv/n8n/data"
 # docker_host = "unix:///var/run/docker.sock"
 ```
 
-Use terraform in docker since synology makes it almost impossible to install CLI tools:
-```bash
-docker run 
-  --rm 
-  -w /home 
-  -v ./:/home \# Pass the necessary terraform and env files
-  -v /var/run/docker.sock:/var/run/docker.sock \# Pass the docker socket for the Docker provider
-  --entrypoint "sh" \ # Override "terraform" entrypoint with sh 
-  hashicorp/terraform:latest \
-  run.sh # Use run script to do terraform CLI steps
-```
+Use terraform in docker since DSM makes it almost impossible to install CLI tools:
 
 ```bash
-source .env
+alias terraform="docker run 
+  --rm 
+  --env-file .env 
+  -w /home 
+  -v ./:/home 
+  -v /var/run/docker.sock:/var/run/docker.sock 
+  hashicorp/terraform:latest" 
+```
+
+Deploying the homelab:
+```bash
 terraform init 
 terraform apply --auto-approve 
+```
+
+Shutting down the homelab:
+```bash
+terraform destoy --auto-approve 
 ```
 
 ## What gets created
