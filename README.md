@@ -1,4 +1,4 @@
-# HomeLab (Terraform-managed Cloudflare + Docker)
+# Home Lab
 
 Infrastructure-as-code for a small homelab, managed entirely with Terraform. It provisions:
 - Cloudflare Zero Trust Tunnel and DNS
@@ -11,17 +11,17 @@ Infrastructure-as-code for a small homelab, managed entirely with Terraform. It 
   - Account: Zero Trust Tunnel: Read & Edit
   - Zone: DNS: Read & Edit
 
-## Repository structure (root Terraform)
+## Structure
 - `providers.tf` – providers (Cloudflare, Docker)
 - `variables.tf` – input variables
 - `locals.tf` – shared Cloudflare IDs (account_id, zone_id, tunnel_id)
 - `cloudflare.tf` – Cloudflare tunnel, config, output, Cloudflared container
 - `homeassistant.tf` – Home Assistant DNS, ingress, Docker image/container
 - `n8n.tf` – n8n DNS, ingress, Docker image/container
-- `synology_drive.tf` – Synology Drive DNS, ingress
+- `synology_drive.tf` – Synology Drive DNS
 
 ## Configuration
-Create `terraform.tfvars` in repo root (example):
+Create `terraform.tfvars` (example):
 ```hcl
 cloudflare_api_token   = "<your token>"
 cloudflare_domain_name = "example.com"
@@ -41,14 +41,10 @@ n8n_data_path              = "/srv/n8n/data"
 # docker_host = "unix:///var/run/docker.sock"
 ```
 
-Initialize and apply from repo root:
+Initialize and apply:
 ```bash
-terraform init
-terraform apply
+terraform init && terraform apply
 ```
-
-Outputs:
-- `cloudflare_tunnel_token` (sensitive) – used by the Cloudflared connector container.
 
 ## What gets created
 - Cloudflare Tunnel and DNS CNAMEs for service subdomains.
@@ -119,22 +115,3 @@ resource "docker_container" "n8n" {
   ]
 }
 ```
-
-## Modular ingress pattern
-Each service file defines a local ingress list and its DNS record. Example:
-```11:19:/Users/mart.bent/Private/Git/homelab/homeassistant.tf
-locals {
-  ingress_homeassistant = [
-    {
-      hostname = "${var.homeassistant_prefix}.${var.cloudflare_domain_name}"
-      service  = "http://${var.host_local_ip}:8123"
-    }
-  ]
-}
-```
-
-To add a new service:
-1. Create `<service>.tf` with its DNS record and `locals { ingress_<service> = [...] }`.
-2. Append `local.ingress_<service>` to the `ingress` concat in `cloudflare.tf`.
-3. Add Docker image/container resources if applicable.
-4. Run `terraform apply`.
