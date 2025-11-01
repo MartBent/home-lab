@@ -44,13 +44,13 @@ n8n_data_path              = "/srv/n8n/data"
 Use terraform in docker since DSM makes it almost impossible to install CLI tools:
 
 ```bash
-alias terraform="docker run 
-  --rm 
-  --env-file .env 
-  -w /home 
-  -v ./:/home 
-  -v /var/run/docker.sock:/var/run/docker.sock 
-  hashicorp/terraform:latest" 
+alias terraform="docker run \
+  --rm  \
+  --env-file .env \
+  -w /home \
+  -v ./:/home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  hashicorp/terraform:latest"
 ```
 
 Deploying the homelab:
