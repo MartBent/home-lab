@@ -42,8 +42,21 @@ n8n_data_path              = "/srv/n8n/data"
 ```
 
 Initialize and apply:
+
 ```bash
-terraform init && terraform apply
+docker run  \
+  -rmit \ # Interactive shell & cleanup
+  -w /home \ # set working directory
+  --entrypoint "sh" \ # override the "terraform" entrypoint with "sh"
+  -v /var/run/docker.sock:/var/run/docker.sock \ # Pass the docker socket for the Docker provider
+  -v ./:/home:rw \ # Pass the necessary terraform and env files
+  hashicorp/terraform:latest run.sh \ # Use run script to do terraform CLI steps
+```
+
+```bash
+source .env
+terraform init 
+terraform apply --auto-approve 
 ```
 
 ## What gets created
