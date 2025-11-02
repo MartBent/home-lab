@@ -3,8 +3,8 @@
 Infrastructure-as-code for a Synology-powered homelab, managed entirely with Terraform executed inside Docker. The configuration provisions:
 
 - Cloudflare Zero Trust tunnel and DNS records for remote access
-- Host-networked Docker containers for Home Assistant and n8n
-- Modular ingress rules that route Cloudflare traffic back to services on your LAN
+- Several self-hosted services using docker containers
+- Ingress rules that route Cloudflare traffic back to services on the LAN
 
 ## Requirements
 
@@ -15,14 +15,19 @@ Infrastructure-as-code for a Synology-powered homelab, managed entirely with Ter
   - Zone: DNS (Read & Edit)
 
 ## Repository Layout
+The infrastructure consists of 2 part, the shared (cloudflare) configurations, and several containerized services.
 
+### Cloudflare:
 - `providers.tf` – Cloudflare and Docker providers
 - `variables.tf` – Input variables for tokens, prefixes, and host paths
 - `locals.tf` – Shared Cloudflare identifiers (account, zone, tunnel)
 - `cloudflare.tf` – Tunnel resources, ingress config, and Cloudflared container
-- `homeassistant.tf` – DNS, ingress, and container for Home Assistant
-- `n8n.tf` – DNS, ingress, and container for n8n
-- `run.sh` – Convenience wrapper that calls Terraform commands
+
+These components set up the required cloudflare tunnel, CNAME records, ingress rules and the cloudflared docker container for LAN routing.
+
+### Services:
+- `homeassistant.tf` - For home automation
+- `n8n.tf` - For automated bookkeeping, agentic homeassistant interaction, etc..
 
 ## Configure Terraform in Docker on Synology DSM
 
@@ -35,7 +40,7 @@ Infrastructure-as-code for a Synology-powered homelab, managed entirely with Ter
 
    Log out and back in (or reboot) so the new group membership takes effect.
 
-2. Add a Terraform helper function so every Terraform command runs inside the official Docker image (add this to your shell profile, e.g. `~/.zshrc`):
+2. Add a Terraform helper function so every Terraform command runs inside the official Docker image:
 
    ```bash
    terraform() {
@@ -83,81 +88,4 @@ To tear everything down:
 
 ```bash
 terraform destroy --auto-approve
-```
-## What Gets Created
-
-- Cloudflare tunnel, tunnel token output, and dockerised Cloudflared connector defined in `cloudflare.tf`.
-- DNS CNAMEs and ingress definitions for each service file (`homeassistant.tf`, `n8n.tf`).
-- Host-networked Docker containers that reuse existing data directories on the Synology box.
-
-Terraform combines the ingress arrays exposed by each service into the tunnel configuration:
-
-```19:33:/Users/mart.bent/Private/Git/homelab/cloudflare.tf
-resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
-  tunnel_id  = local.tunnel_id
-  account_id = local.account_id
-  config = {
-    ingress = concat(
-      local.ingress_homeassistant,
-      local.ingress_n8n,
-      [
-        {
-          service = "http_status:404"
-        }
-      ]
-    )
-  }
-}
-```
-
-The Cloudflared connector runs alongside your other services on the Synology host:
-
-```41:50:/Users/mart.bent/Private/Git/homelab/cloudflare.tf
-resource "docker_container" "cloudflared" {
-  image        = docker_image.cloudflared.name
-  name         = "cloudflared"
-  network_mode = "host"
-  restart      = "unless-stopped"
-  command      = ["tunnel", "run", "--token", data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token]
-}
-```
-
-Service containers reuse host paths you define via the `TF_VAR_*` values in `.env`, keeping configuration and data persistent across redeployments:
-
-```25:36:/Users/mart.bent/Private/Git/homelab/homeassistant.tf
-resource "docker_container" "homeassistant" {
-  image        = docker_image.homeassistant.name
-  name         = "homeassistant"
-  network_mode = "host"
-  restart      = "unless-stopped"
-  volumes {
-    container_path = "/config"
-    host_path      = var.homeassistant_config_path
-    read_only      = false
-  }
-}
-```
-
-```25:46:/Users/mart.bent/Private/Git/homelab/n8n.tf
-resource "docker_container" "n8n" {
-  image        = docker_image.n8n.name
-  name         = "n8n"
-  network_mode = "host"
-  restart      = "unless-stopped"
-  volumes {
-    container_path = "/home/node/.n8n"
-    host_path      = var.n8n_data_path
-    read_only      = false
-  }
-  env = [
-    "NODE_ENV=production",
-    "N8N_RELEASE_TYPE=stable",
-    "GENERIC_TIMEZONE=Europe/Amsterdam",
-    "TZ=Europe/Amsterdam",
-    "SUBDOMAIN=${var.n8n_prefix}",
-    "N8N_HOST=${var.n8n_prefix}.${var.cloudflare_domain_name}",
-    "DOMAIN_NAME=${var.cloudflare_domain_name}",
-    "WEBHOOK_URL=https://${var.n8n_prefix}.${var.cloudflare_domain_name}"
-  ]
-}
 ```
