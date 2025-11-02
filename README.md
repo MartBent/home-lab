@@ -1,72 +1,97 @@
 # Home Lab
 
-Infrastructure-as-code for a small homelab, managed entirely with Terraform. It provisions:
-- Cloudflare Zero Trust Tunnel and DNS
-- Host-networked Docker containers for services (Home Assistant, n8n)
-- A modular ingress configuration to route tunnel traffic to local services
+Infrastructure-as-code for a Synology-powered homelab, managed entirely with Terraform executed inside Docker. The configuration provisions:
 
-## Prerequisites
-- Terraform >= 1.5
-- Cloudflare API token with permissions:
-  - Account: Zero Trust Tunnel: Read & Edit
-  - Zone: DNS: Read & Edit
+- Cloudflare Zero Trust tunnel and DNS records for remote access
+- Host-networked Docker containers for Home Assistant and n8n
+- Modular ingress rules that route Cloudflare traffic back to services on your LAN
 
-## Structure
-- `providers.tf` – providers (Cloudflare, Docker)
-- `variables.tf` – input variables
-- `locals.tf` – shared Cloudflare IDs (account_id, zone_id, tunnel_id)
-- `cloudflare.tf` – Cloudflare tunnel, config, output, Cloudflared container
-- `homeassistant.tf` – Home Assistant DNS, ingress, Docker image/container
-- `n8n.tf` – n8n DNS, ingress, Docker image/container
-- `synology_drive.tf` – Synology Drive DNS
+## Requirements
 
+- **Synology DSM** with the Docker package installed
+- **Terraform >= 1.5**, executed via the official Docker image
+- **Cloudflare API token** with:
+  - Account: Zero Trust Tunnel (Read & Edit)
+  - Zone: DNS (Read & Edit)
+
+## Repository Layout
+
+- `providers.tf` – Cloudflare and Docker providers
+- `variables.tf` – Input variables for tokens, prefixes, and host paths
+- `locals.tf` – Shared Cloudflare identifiers (account, zone, tunnel)
+- `cloudflare.tf` – Tunnel resources, ingress config, and Cloudflared container
+- `homeassistant.tf` – DNS, ingress, and container for Home Assistant
+- `n8n.tf` – DNS, ingress, and container for n8n
+- `run.sh` – Convenience wrapper that calls Terraform commands
+
+## Configure Terraform in Docker on Synology DSM
+
+1. Grant your DSM user access to Docker:
+
+   ```bash
+   sudo synogroup -add docker "$USER"
+   sudo chown root:docker /var/run/docker.sock
+   ```
+
+   Log out and back in (or reboot) so the new group membership takes effect.
+
+2. Add a Terraform helper function so every Terraform command runs inside the official Docker image (add this to your shell profile, e.g. `~/.zshrc`):
+
+   ```bash
+   terraform() {
+     docker run --rm \
+       --env-file "$PWD/.env" \
+       -v "$PWD":/workspace \
+       -v /var/run/docker.sock:/var/run/docker.sock \
+       -w /workspace \
+       hashicorp/terraform:latest "$@"
+   }
+   ```
 ## Configuration
-Create `terraform.tfvars` (example):
-```hcl
-cloudflare_api_token   = "<your token>"
-cloudflare_domain_name = "example.com"
-cloudflare_tunnel_name = "homelab-tunnel"
-host_local_ip          = "192.168.1.10"
+
+Populate a `.env` file in the repository root with Terraform variables. Terraform automatically maps any variable prefixed with `TF_VAR_` to the corresponding input variable in your configuration:
+
+```bash
+TF_VAR_cloudflare_api_token=<your token>
+TF_VAR_cloudflare_domain_name=example.com
+TF_VAR_cloudflare_tunnel_name=homelab-tunnel
+TF_VAR_host_local_ip=192.168.1.10
 
 # Service subdomain prefixes
-homeassistant_prefix = "ha"
-n8n_prefix           = "n8n"
-drive_prefix         = "drive"
+TF_VAR_homeassistant_prefix=ha
+TF_VAR_n8n_prefix=n8n
 
 # Local data paths for containers (required)
-homeassistant_config_path = "/srv/homeassistant/config"
-n8n_data_path              = "/srv/n8n/data"
+TF_VAR_homeassistant_config_path=/srv/homeassistant/config
+TF_VAR_n8n_data_path=/srv/n8n/data
 
-# Optional: Docker host (default unix:///var/run/docker.sock)
-# docker_host = "unix:///var/run/docker.sock"
+# Optional: override the Docker socket location
+# TF_VAR_docker_host=unix:///var/run/docker.sock
 ```
 
-Use terraform in docker since DSM makes it almost impossible to install CLI tools:
+## Usage
+
+Run Terraform commands as usual—the wrapper forwards arguments to the Dockerised CLI:
 
 ```bash
-alias terraform="docker run \
-  --rm  \
-  --env-file .env \
-  -w /home \
-  -v ./:/home \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  hashicorp/terraform:latest"
+terraform init
+terraform plan
+terraform apply --auto-approve
 ```
 
-Deploying the homelab:
+To tear everything down:
+
 ```bash
-terraform init 
-terraform apply --auto-approve 
+terraform destroy --auto-approve
 ```
+## What Gets Created
 
-Shutting down the homelab:
-```bash
-terraform destoy --auto-approve 
-```
+- Cloudflare tunnel, tunnel token output, and dockerised Cloudflared connector defined in `cloudflare.tf`.
+- DNS CNAMEs and ingress definitions for each service file (`homeassistant.tf`, `n8n.tf`).
+- Host-networked Docker containers that reuse existing data directories on the Synology box.
 
-## What gets created
-- Cloudflare Tunnel and DNS CNAMEs for service subdomains.
-- Ingress rules composed from each service file and applied to the tunnel:
+Terraform combines the ingress arrays exposed by each service into the tunnel configuration:
+
 ```19:33:/Users/mart.bent/Private/Git/homelab/cloudflare.tf
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
   tunnel_id  = local.tunnel_id
@@ -75,7 +100,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
     ingress = concat(
       local.ingress_homeassistant,
       local.ingress_n8n,
-      local.ingress_drive,
       [
         {
           service = "http_status:404"
@@ -85,8 +109,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
   }
 }
 ```
-- Cloudflared connector running as a Docker container on the host:
-```41:51:/Users/mart.bent/Private/Git/homelab/cloudflare.tf
+
+The Cloudflared connector runs alongside your other services on the Synology host:
+
+```41:50:/Users/mart.bent/Private/Git/homelab/cloudflare.tf
 resource "docker_container" "cloudflared" {
   image        = docker_image.cloudflared.name
   name         = "cloudflared"
@@ -95,7 +121,9 @@ resource "docker_container" "cloudflared" {
   command      = ["tunnel", "run", "--token", data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token]
 }
 ```
-- Home Assistant container (host networking) using your local config path:
+
+Service containers reuse host paths you define via the `TF_VAR_*` values in `.env`, keeping configuration and data persistent across redeployments:
+
 ```25:36:/Users/mart.bent/Private/Git/homelab/homeassistant.tf
 resource "docker_container" "homeassistant" {
   image        = docker_image.homeassistant.name
@@ -109,7 +137,7 @@ resource "docker_container" "homeassistant" {
   }
 }
 ```
-- n8n container (host networking) with persistent data volume and env:
+
 ```25:46:/Users/mart.bent/Private/Git/homelab/n8n.tf
 resource "docker_container" "n8n" {
   image        = docker_image.n8n.name
