@@ -21,6 +21,8 @@ services:
     depends_on:
       belegtools-mongodb:
         condition: service_healthy
+      umami:
+        condition: service_started
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
     networks:
