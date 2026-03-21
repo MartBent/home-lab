@@ -29,6 +29,11 @@ variable "drive_prefix" {
   default  = "drive"
   nullable = false
 }
+variable "rfid_analyzer_prefix" {
+  type     = string
+  default  = "sdr"
+  nullable = false
+}
 variable "cloudflare_tunnel_name" {
   type     = string
   default  = "homelab-tunnel"
