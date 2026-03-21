@@ -21,9 +21,9 @@ variable "rfid_analyzer_prefix" {
   default  = "sdr"
   nullable = false
 }
-variable "belegtools_prefix" {
+variable "belegtools_domain_name" {
   type     = string
-  default  = "belegtools"
+  default  = "belegtools.nl"
   nullable = false
 }
 variable "cloudflare_tunnel_name" {
