@@ -8,6 +8,66 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
+  belegtools:
+    image: ghcr.io/martbent/belegtools:latest
+    container_name: belegtools
+    restart: unless-stopped
+    env_file: /volume1/docker/belegtools/.env
+    environment:
+      - MONGODB_URL=mongodb://${MONGO_USER}:${MONGO_PASSWORD}@belegtools-mongodb:27017
+      - MONGODB_DB=${MONGO_DB}
+    ports:
+      - "3000:80"
+    depends_on:
+      belegtools-mongodb:
+        condition: service_healthy
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      - default
+      - belegtools
+
+  belegtools-mongodb:
+    image: mongo:4.4
+    container_name: belegtools-mongodb
+    restart: unless-stopped
+    env_file: /volume1/docker/belegtools/.env
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
+      - MONGO_INITDB_DATABASE=${MONGO_DB}
+    volumes:
+      - belegtools_mongodb_data:/data/db
+    networks:
+      - belegtools
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  belegtools-redis:
+    image: redis:7-alpine
+    container_name: belegtools-redis
+    restart: unless-stopped
+    env_file: /volume1/docker/belegtools/.env
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --bind 0.0.0.0
+      --protected-mode yes
+    volumes:
+      - belegtools_redis_data:/data
+    networks:
+      - belegtools
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower
@@ -21,3 +81,11 @@ services:
       - WATCHTOWER_LABEL_ENABLE=true
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+
+volumes:
+  belegtools_mongodb_data:
+  belegtools_redis_data:
+
+networks:
+  belegtools:
+    driver: bridge

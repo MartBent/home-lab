@@ -21,6 +21,11 @@ variable "rfid_analyzer_prefix" {
   default  = "sdr"
   nullable = false
 }
+variable "belegtools_prefix" {
+  type     = string
+  default  = "belegtools"
+  nullable = false
+}
 variable "cloudflare_tunnel_name" {
   type     = string
   default  = "homelab-tunnel"

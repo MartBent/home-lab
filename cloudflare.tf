@@ -24,6 +24,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
       local.ingress_homeassistant,
       local.ingress_n8n,
       local.ingress_rfid_analyzer,
+      local.ingress_belegtools,
       [
         {
           service = "http_status:404"
