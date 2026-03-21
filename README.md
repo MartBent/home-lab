@@ -4,7 +4,7 @@ Infrastructure-as-code for a Synology-powered homelab. The setup is split into t
 
 - **Terraform** manages Cloudflare infrastructure (tunnel, DNS records, ingress routing)
 - **Docker Compose** manages self-built containerized services on the NAS
-- **Standalone containers** for third-party services (HA, n8n, cloudflared) managed manually via Synology Container Manager
+- **Standalone containers** for third-party services (Home Assistant, n8n, cloudflared) managed manually via Synology Container Manager
 
 ## Repository Layout
 
