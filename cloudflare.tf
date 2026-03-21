@@ -23,7 +23,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
     ingress = concat(
       local.ingress_homeassistant,
       local.ingress_n8n,
-      local.ingress_drive,
       local.ingress_rfid_analyzer,
       [
         {
@@ -37,16 +36,4 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "this" {
 output "cloudflare_tunnel_token" {
   value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token
   sensitive = true
-}
-
-resource "docker_image" "cloudflared" {
-  name = "cloudflare/cloudflared:latest"
-}
-
-resource "docker_container" "cloudflared" {
-  image        = docker_image.cloudflared.name
-  name         = "cloudflared"
-  network_mode = "host"
-  restart      = "unless-stopped"
-  command      = ["tunnel", "run", "--token", data.cloudflare_zero_trust_tunnel_cloudflared_token.tunnel_token.token]
 }

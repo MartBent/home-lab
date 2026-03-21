@@ -11,22 +11,9 @@ variable "homeassistant_prefix" {
   default  = "ha"
   nullable = false
 }
-variable "homeassistant_config_path" {
-  type     = string
-  nullable = false
-}
 variable "n8n_prefix" {
   type     = string
   default  = "n8n"
-  nullable = false
-}
-variable "n8n_data_path" {
-  type     = string
-  nullable = false
-}
-variable "drive_prefix" {
-  type     = string
-  default  = "drive"
   nullable = false
 }
 variable "rfid_analyzer_prefix" {
@@ -41,11 +28,5 @@ variable "cloudflare_tunnel_name" {
 }
 variable "cloudflare_domain_name" {
   type     = string
-  nullable = false
-}
-
-variable "docker_host" {
-  type     = string
-  default  = "unix:///var/run/docker.sock"
   nullable = false
 }

@@ -17,20 +17,3 @@ locals {
     }
   ]
 }
-
-resource "docker_image" "homeassistant" {
-  name = "ghcr.io/home-assistant/home-assistant:stable"
-}
-
-# Create a container
-resource "docker_container" "homeassistant" {
-  image        = docker_image.homeassistant.name
-  name         = "homeassistant"
-  network_mode = "host"
-  restart      = "unless-stopped"
-  volumes {
-    container_path = "/config"
-    host_path      = var.homeassistant_config_path
-    read_only      = false
-  }
-}
