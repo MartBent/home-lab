@@ -3,7 +3,8 @@
 Infrastructure-as-code for a Synology-powered homelab. The setup is split into two layers:
 
 - **Terraform** manages Cloudflare infrastructure (tunnel, DNS records, ingress routing)
-- **Docker Compose** manages all containerized services on the NAS
+- **Docker Compose** manages self-built containerized services on the NAS
+- **Standalone containers** for third-party services (HA, n8n, cloudflared) managed manually via Synology Container Manager
 
 ## Repository Layout
 
@@ -12,28 +13,28 @@ Infrastructure-as-code for a Synology-powered homelab. The setup is split into t
 ├── homeassistant.tf       # HA DNS record + ingress
 ├── n8n.tf                 # n8n DNS record + ingress
 ├── rfid-analyzer.tf       # RFID analyzer DNS record + ingress
+├── belegtools.tf          # Belegtools DNS record + ingress
 ├── providers.tf           # Cloudflare provider
 ├── variables.tf           # Input variables
 ├── locals.tf              # Shared Cloudflare identifiers
 └── docker/
     ├── .env.example       # Required env vars (copy to ~/.env on NAS)
-    ├── services/          # Third-party services (HA, n8n, cloudflared)
-    │   └── docker-compose.yml
     └── my-apps/           # Self-managed images + Watchtower
         └── docker-compose.yml
 ```
 
 ## Services
 
-| Service | Compose Stack | Port | Subdomain |
-|---------|--------------|------|-----------|
-| Home Assistant | services | 8123 | `ha` |
-| n8n | services | 5678 | `n8n` |
-| Cloudflared | services | - | - |
-| RFID Analyzer | my-apps | 8080 | `sdr` |
-| Watchtower | my-apps | - | - |
+| Service | Management | Port | Subdomain |
+|---------|-----------|------|-----------|
+| Home Assistant | Standalone | 8123 | `ha` |
+| n8n | Standalone | 5678 | `n8n` |
+| Cloudflared | Standalone | - | - |
+| RFID Analyzer | Compose + Watchtower | 8080 | `sdr` |
+| Belegtools | Compose + Watchtower | 3000 | `belegtools` |
+| Watchtower | Compose | - | - |
 
-**Watchtower** runs in label-only mode — it only auto-updates containers with the `com.centurylinklabs.watchtower.enable=true` label (currently just `rfid-analyzer`). Third-party services are updated manually.
+**Watchtower** runs in label-only mode — it only auto-updates containers with the `com.centurylinklabs.watchtower.enable=true` label. Third-party services are updated manually.
 
 ## Requirements
 
@@ -54,18 +55,15 @@ cp docker/.env.example ~/.env
 chmod 600 ~/.env
 ```
 
+Belegtools secrets are stored separately in `/volume1/docker/belegtools/.env`.
+
 ### 2. Docker Compose
 
-Start the services on the NAS:
+Start self-managed apps on the NAS:
 
 ```bash
 DOCKER=/volume1/@appstore/ContainerManager/usr/bin/docker
-
-# Third-party services
-$DOCKER compose --env-file ~/.env -f docker/services/docker-compose.yml up -d
-
-# Self-managed apps + Watchtower
-$DOCKER compose --env-file ~/.env -f docker/my-apps/docker-compose.yml up -d
+$DOCKER compose --env-file /volume1/docker/belegtools/.env -f docker/my-apps/docker-compose.yml up -d
 ```
 
 ### 3. Terraform
@@ -91,6 +89,7 @@ TF_VAR_host_local_ip=192.168.1.204
 TF_VAR_homeassistant_prefix=ha
 TF_VAR_n8n_prefix=n8n
 TF_VAR_rfid_analyzer_prefix=sdr
+TF_VAR_belegtools_prefix=belegtools
 ```
 
 Then run:

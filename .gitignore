@@ -25,6 +25,12 @@ terraform.tfvars
 .idea/
 .history
 
+# ---- Synology ----
+@eaDir/
+docker.sock
+ha/
+n8n/
+
 # ---- Temp files ----
 *.swp
 *.swo
