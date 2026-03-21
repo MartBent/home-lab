@@ -52,6 +52,8 @@ services:
     image: ghcr.io/umami-software/umami:postgresql-latest
     container_name: umami
     restart: unless-stopped
+    ports:
+      - "3001:3000"
     environment:
       - DATABASE_URL=postgresql://${UMAMI_POSTGRES_USER}:${UMAMI_POSTGRES_PASSWORD}@umami-db:5432/${UMAMI_POSTGRES_DB}
       - APP_SECRET=${UMAMI_APP_SECRET}
