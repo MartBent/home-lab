@@ -46,6 +46,40 @@ services:
       timeout: 5s
       retries: 5
 
+  umami:
+    image: ghcr.io/umami-software/umami:postgresql-latest
+    container_name: umami
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${UMAMI_POSTGRES_USER}:${UMAMI_POSTGRES_PASSWORD}@umami-db:5432/${UMAMI_POSTGRES_DB}
+      - APP_SECRET=${UMAMI_APP_SECRET}
+    env_file: /volume1/docker/belegtools/.env
+    depends_on:
+      umami-db:
+        condition: service_healthy
+    networks:
+      - belegtools
+
+  umami-db:
+    image: postgres:16-alpine
+    container_name: umami-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${UMAMI_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${UMAMI_POSTGRES_PASSWORD}
+      - POSTGRES_DB=${UMAMI_POSTGRES_DB}
+    env_file: /volume1/docker/belegtools/.env
+    volumes:
+      - umami_db_data:/var/lib/postgresql/data
+    networks:
+      - belegtools
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${UMAMI_POSTGRES_USER} -d ${UMAMI_POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    user: "postgres"
+
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower
@@ -62,6 +96,7 @@ services:
 
 volumes:
   belegtools_mongodb_data:
+  umami_db_data:
 
 networks:
   belegtools:
