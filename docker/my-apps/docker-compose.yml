@@ -84,6 +84,39 @@ services:
       retries: 5
     user: "postgres"
 
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    hostname: HomeLab
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ../../ha:/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    hostname: HomeLab
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - DOMAIN_NAME=${N8N_DOMAIN}
+      - SUBDOMAIN=${N8N_SUBDOMAIN}
+      - TZ=Europe/Amsterdam
+      - GENERIC_TIMEZONE=Europe/Amsterdam
+      - WEBHOOK_URL=https://${N8N_SUBDOMAIN}.${N8N_DOMAIN}
+      - N8N_HOST=${N8N_SUBDOMAIN}.${N8N_DOMAIN}
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower
@@ -101,6 +134,7 @@ services:
 volumes:
   belegtools_mongodb_data:
   umami_db_data:
+  n8n_data:
 
 networks:
   belegtools:
