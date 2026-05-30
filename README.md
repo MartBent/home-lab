@@ -3,8 +3,7 @@
 Infrastructure-as-code for a Synology-powered homelab. The setup is split into two layers:
 
 - **Terraform** manages Cloudflare infrastructure (tunnel, DNS records, ingress routing)
-- **Docker Compose** manages self-built containerized services on the NAS
-- **Standalone containers** for third-party services (Home Assistant, n8n, cloudflared) managed manually via Synology Container Manager
+- **Docker Compose** manages all containerized services on the NAS
 
 ## Repository Layout
 
@@ -18,23 +17,28 @@ Infrastructure-as-code for a Synology-powered homelab. The setup is split into t
 ├── variables.tf           # Input variables
 ├── locals.tf              # Shared Cloudflare identifiers
 └── docker/
-    ├── .env.example       # Required env vars (copy to ~/.env on NAS)
-    └── my-apps/           # Self-managed images + Watchtower
+    └── my-apps/
+        ├── .env.example   # Required compose env vars (copy to .env, fill in)
         └── docker-compose.yml
 ```
 
 ## Services
 
-| Service | Management | Port | Subdomain |
-|---------|-----------|------|-----------|
-| Home Assistant | Standalone | 8123 | `ha` |
-| n8n | Standalone | 5678 | `n8n` |
-| Cloudflared | Standalone | - | - |
-| RFID Analyzer | Compose + Watchtower | 8080 | `sdr` |
-| Belegtools | Compose + Watchtower | 3000 | `belegtools` |
-| Watchtower | Compose | - | - |
+All services run from a single compose project named `my-apps`.
 
-**Watchtower** runs in label-only mode — it only auto-updates containers with the `com.centurylinklabs.watchtower.enable=true` label. Third-party services are updated manually.
+| Service (container) | Image | Port | Subdomain |
+|---|---|---|---|
+| `homeassistant` | ghcr.io/home-assistant/home-assistant:stable | 8123 (host net) | `ha` |
+| `n8n` | docker.n8n.io/n8nio/n8n:latest | 5678 (host net) | `n8n` |
+| `cloudflared` | cloudflare/cloudflared:latest | — (host net) | — |
+| `rfid-analyzer` | ghcr.io/martbent/rtl-sdr-uhf-rfid-analyzer:latest | 8080 → 80 | `sdr` |
+| `belegtools` | ghcr.io/martbent/belegtools:latest | 3000 → 80 | `belegtools` (on belegtools.nl) |
+| `belegtools-mongodb` | mongo:4.4 | internal | — |
+| `belegtools-umami` | ghcr.io/umami-software/umami:postgresql-latest | 3001 → 3000 | — (local-network only) |
+| `belegtools-umami-db` | postgres:16-alpine | internal | — |
+| `watchtower` | containrrr/watchtower | — | — |
+
+**Watchtower** runs in label-only mode — it only auto-updates containers with the `com.centurylinklabs.watchtower.enable=true` label (currently `rfid-analyzer`, `belegtools`, `watchtower` itself). Third-party images (HA, n8n, postgres, mongo, cloudflared) are updated manually.
 
 ## Requirements
 
@@ -48,22 +52,22 @@ Infrastructure-as-code for a Synology-powered homelab. The setup is split into t
 
 ### 1. Environment variables
 
-Copy `docker/.env.example` to `~/.env` on the NAS and fill in the values:
+Copy the compose env example and fill in values:
 
 ```bash
-cp docker/.env.example ~/.env
-chmod 600 ~/.env
+cp docker/my-apps/.env.example docker/my-apps/.env
+chmod 600 docker/my-apps/.env
 ```
 
-Belegtools secrets are stored separately in `/volume1/docker/belegtools/.env`.
+This single file holds all compose-time vars (belegtools DB credentials, Umami secrets, Cloudflare tunnel token, n8n config). It's auto-loaded by `docker compose` because it sits next to `docker-compose.yml`.
 
 ### 2. Docker Compose
 
-Start self-managed apps on the NAS:
+Start all apps on the NAS:
 
 ```bash
-DOCKER=/volume1/@appstore/ContainerManager/usr/bin/docker
-$DOCKER compose --env-file /volume1/docker/belegtools/.env -f docker/my-apps/docker-compose.yml up -d
+DOCKER=/usr/local/bin/docker
+$DOCKER compose -f docker/my-apps/docker-compose.yml up -d
 ```
 
 ### 3. Terraform
@@ -85,11 +89,12 @@ Configure Terraform variables in a `.env` file in the repo root:
 ```bash
 TF_VAR_cloudflare_api_token=<your token>
 TF_VAR_cloudflare_domain_name=example.com
-TF_VAR_host_local_ip=192.168.1.204
+TF_VAR_cloudflare_tunnel_name=HomeLab
+TF_VAR_host_local_ip=server.home          # hostname or IP the cloudflared container resolves
 TF_VAR_homeassistant_prefix=ha
 TF_VAR_n8n_prefix=n8n
 TF_VAR_rfid_analyzer_prefix=sdr
-TF_VAR_belegtools_prefix=belegtools
+TF_VAR_belegtools_domain_name=belegtools.nl
 ```
 
 Then run:
