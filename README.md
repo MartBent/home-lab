@@ -16,6 +16,7 @@ Infrastructure-as-code for a Synology-powered homelab. The setup is split into t
 ├── providers.tf           # Cloudflare provider
 ├── variables.tf           # Input variables
 ├── locals.tf              # Shared Cloudflare identifiers
+├── ha/                    # Home Assistant /config (gitignored, lives only on NAS)
 └── docker/
     └── my-apps/
         ├── .env.example   # Required compose env vars (copy to .env, fill in)
@@ -50,29 +51,11 @@ All services run from a single compose project named `my-apps`.
 
 ## Setup
 
-### 1. Environment variables
+The full bring-up is **Terraform first → grab tunnel token → docker compose up**, because the `CLOUDFLARE_TUNNEL_TOKEN` is an output of `terraform apply`.
 
-Copy the compose env example and fill in values:
+### 1. Terraform
 
-```bash
-cp docker/my-apps/.env.example docker/my-apps/.env
-chmod 600 docker/my-apps/.env
-```
-
-This single file holds all compose-time vars (belegtools DB credentials, Umami secrets, Cloudflare tunnel token, n8n config). It's auto-loaded by `docker compose` because it sits next to `docker-compose.yml`.
-
-### 2. Docker Compose
-
-Start all apps on the NAS:
-
-```bash
-DOCKER=/usr/local/bin/docker
-$DOCKER compose -f docker/my-apps/docker-compose.yml up -d
-```
-
-### 3. Terraform
-
-Add a Terraform helper function so every command runs inside the official Docker image:
+Add a helper function so every command runs inside the official Docker image:
 
 ```bash
 terraform() {
@@ -84,7 +67,7 @@ terraform() {
 }
 ```
 
-Configure Terraform variables in a `.env` file in the repo root:
+Create `.env` in the repo root (gitignored):
 
 ```bash
 TF_VAR_cloudflare_api_token=<your token>
@@ -97,20 +80,71 @@ TF_VAR_rfid_analyzer_prefix=sdr
 TF_VAR_belegtools_domain_name=belegtools.nl
 ```
 
-Then run:
+Apply:
 
 ```bash
 terraform init
-terraform plan
-terraform apply --auto-approve
+terraform apply -auto-approve
 ```
 
-### 4. GHCR authentication
+### 2. Grab the tunnel token
 
-To pull private images from GitHub Container Registry:
+```bash
+terraform output -raw cloudflare_tunnel_token
+```
+
+### 3. Docker Compose env file
+
+```bash
+cp docker/my-apps/.env.example docker/my-apps/.env
+chmod 600 docker/my-apps/.env
+# Paste the tunnel token from step 2 into CLOUDFLARE_TUNNEL_TOKEN
+# Fill in MONGO_*, UMAMI_*, APP_*, N8N_* values
+```
+
+This single file holds all compose-time vars. It's auto-loaded by `docker compose` because it sits next to `docker-compose.yml`.
+
+### 4. Home Assistant config
+
+The `ha/` directory is gitignored — it holds HA's runtime config + DB + backups. On a fresh setup, create it with at least:
+
+```yaml
+# ha/configuration.yaml
+default_config:
+
+http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 192.168.0.0/24    # LAN subnet — cloudflared (host net) appears from the NAS IP here
+    - 127.0.0.1
+```
+
+The `trusted_proxies` block is required because cloudflared runs in `network_mode: host` and reaches HA at `http://server.home:8123`; from HA's perspective the X-Forwarded-For comes from the host's LAN IP. Without it HA returns `400 Bad Request` on all proxied requests.
+
+### 5. Docker Compose up
+
+```bash
+DOCKER=/usr/local/bin/docker
+$DOCKER compose -f docker/my-apps/docker-compose.yml up -d
+```
+
+### 6. GHCR authentication (for private images)
 
 ```bash
 docker login ghcr.io -u <github-username>
 ```
 
 Enter a Personal Access Token with `read:packages` scope.
+
+## Token rotation
+
+If you rotate the Cloudflare API token (or run `terraform destroy` + `apply` and need a new tunnel token):
+
+```bash
+# In repo root
+terraform apply -auto-approve
+NEW_TOKEN=$(terraform output -raw cloudflare_tunnel_token)
+sed -i.bak -E "s|^CLOUDFLARE_TUNNEL_TOKEN=.*|CLOUDFLARE_TUNNEL_TOKEN=$NEW_TOKEN|" docker/my-apps/.env
+rm docker/my-apps/.env.bak
+docker compose -f docker/my-apps/docker-compose.yml up -d --force-recreate cloudflared
+```
