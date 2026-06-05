@@ -31,6 +31,10 @@ docker.sock
 ha/
 n8n/
 
+# ---- Python ----
+__pycache__/
+*.pyc
+
 # ---- Temp files ----
 *.swp
 *.swo

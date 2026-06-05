@@ -21,6 +21,11 @@ variable "rfid_analyzer_prefix" {
   default  = "sdr"
   nullable = false
 }
+variable "echo_prefix" {
+  type     = string
+  default  = "echo"
+  nullable = false
+}
 variable "belegtools_domain_name" {
   type     = string
   default  = "belegtools.nl"
