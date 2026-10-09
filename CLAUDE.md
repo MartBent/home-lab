@@ -1,86 +1,79 @@
-# Claude operational notes — home-lab
+# Claude operational notes, home-lab
 
-Context for future Claude sessions working on this repo. Covers things that aren't obvious from reading the code: paths, gotchas, conventions, and operational tricks established by previous sessions.
+Context for future Claude sessions on this repo. Covers what you can't get from reading the code: paths, gotchas, conventions, and tricks earlier sessions worked out.
 
 ## Where things live
 
-**Two clones of this repo:**
+Two clones of this repo:
 
 | Location | Purpose |
 |---|---|
-| `~/Private/Git/homelab/` on Mart's Mac | Editing, commits, push |
-| `~/Git/home-lab/` on the NAS (`<user>@server.home`) | **Authoritative for runtime** — terraform state lives here, docker compose runs here, HA config lives here |
+| `~/Private/Git/homelab/` on Mart's Mac | editing, commits, push |
+| `~/Git/home-lab/` on the NAS (`<user>@server.home`) | **authoritative for runtime.** Terraform state lives here, compose runs here, HA config lives here |
 
-GitHub origin: see `git remote -v` (repo was renamed from `homelab` → `home-lab`; GitHub redirects the old URL, but the canonical name is `home-lab`).
+GitHub origin: see `git remote -v`. The repo was renamed `homelab` to `home-lab`; GitHub redirects the old URL but `home-lab` is the canonical name.
 
-**Two `.env` files (different purposes, don't mix up):**
+Two `.env` files, easy to confuse:
 
 | Path | Loaded by | Holds |
 |---|---|---|
-| `~/Git/home-lab/.env` | terraform (via `--env-file`) | `TF_VAR_*` |
-| `~/Git/home-lab/docker/my-apps/.env` | docker compose (auto-loaded next to compose file) | MONGO_*, UMAMI_*, APP_*, CLOUDFLARE_TUNNEL_TOKEN, N8N_* |
+| `~/Git/home-lab/.env` | terraform, via `--env-file` | `TF_VAR_*` |
+| `~/Git/home-lab/docker/my-apps/.env` | docker compose, auto-loaded next to the compose file | `CLOUDFLARE_TUNNEL_TOKEN`, `N8N_*`, `GHCR_*` |
 
-Both are gitignored. A previous `/volume1/docker/belegtools/.env` existed historically; **don't recreate it** — the consolidation into `docker/my-apps/.env` is intentional.
+Both are gitignored. A `/volume1/docker/belegtools/.env` existed historically. Don't recreate it, the consolidation into `docker/my-apps/.env` was deliberate.
+
+Two Home Assistant directories, also easy to confuse:
+
+| Path | Tracked? | What it is |
+|---|---|---|
+| `homeassistant/` | yes | sources worth version control: theme, dashboards, automations. See its README for deploy steps |
+| `ha/` | no | the live `/config` the container mounts, NAS only: database, backups, custom_components |
 
 ## Synology NAS specifics
 
-- Hostname `server.home` (resolved via local DNS). If you need the LAN IP for a config decision, look it up at runtime — don't hard-code:
+- Hostname `server.home`, resolved over local DNS. Need the LAN IP for a config decision? Look it up at runtime, don't hard-code it:
   ```sh
-  nslookup server.home              # works on macOS
-  getent hosts server.home          # works in alpine/debian
+  nslookup server.home              # macOS
+  getent hosts server.home          # alpine/debian
   ```
-- SSH: `ssh <user>@server.home` (NAS admin account; key-based auth; no password from Mart's Mac)
-- Shell: `/bin/sh` over SSH (POSIX) — not bash. Heredoc + `set -e` work; some bash-isms don't.
-- Default SSH `$PATH` is sparse (only `/usr/bin:/bin` style) — **always use absolute paths**:
-  - Docker: `/usr/local/bin/docker`
-  - Git: `/usr/local/bin/git`
-  - Terraform: not installed; runs via `hashicorp/terraform:latest` Docker image
-  - Synology Git package can be added with `export PATH="$PATH:/var/packages/Git/target/bin"` but absolute paths are simpler
-- `sudo` requires a password — **no elevated commands work over non-interactive SSH**. For root-owned files use the privileged-container trick:
+- SSH: `ssh <user>@server.home`. NAS admin account, key-based, no password from Mart's Mac.
+- The SSH shell is `/bin/sh` (POSIX), not bash. Heredoc and `set -e` work, some bash-isms don't.
+- The default SSH `$PATH` is sparse, so always use absolute paths:
+  - docker: `/usr/local/bin/docker`
+  - git: `/usr/local/bin/git`
+  - terraform: not installed, runs from the `hashicorp/terraform:latest` image
+  - the Synology Git package can be added with `export PATH="$PATH:/var/packages/Git/target/bin"`, but absolute paths are simpler
+- `sudo` needs a password, so no elevated command works over non-interactive SSH. For root-owned files, use a privileged container:
   ```sh
   docker run --rm -v /path:/p alpine rm -rf /p/...
   ```
-- The NAS user is in groups `users`, `administrators`, `docker` — so docker works without sudo.
-- `/volume1/` is the main btrfs volume (1.8 TB total, ~75 GB used after cleanup). Three user-facing shares: `Shared files/`, `docker/`, `homes/`. Everything else is DSM internal (`@`-prefixed).
-- Auto-update package list runs via DSM — don't expect Linux-style `apt` or `dnf`. Synology packages live under `/var/packages/`.
+- The NAS user is in `users`, `administrators`, `docker`, so docker needs no sudo.
+- `/volume1/` is the main btrfs volume, 1.8 TB total. Three user-facing shares: `Shared files/`, `docker/`, `homes/`. Everything else is DSM internal, `@`-prefixed.
+- Package updates run through DSM. There is no `apt` or `dnf`; Synology packages live under `/var/packages/`.
 
-## Architectural split (decided this session)
+## Architectural split
 
-- **Terraform → Cloudflare only** (tunnel, DNS records, tunnel ingress config)
-- **Docker Compose → every container** (no more docker resources in TF)
-
-Don't reintroduce `docker_*` resources in `.tf` files. They were removed from code and state in this session.
+Terraform touches Cloudflare only: tunnel, DNS records, tunnel ingress config. Compose owns every container. Don't reintroduce `docker_*` resources in the `.tf` files, an earlier session pulled them out of both the code and the state.
 
 ## Compose project conventions
 
-The project is `my-apps` (taken from the dir name `docker/my-apps/`). All running container labels show `com.docker.compose.project=my-apps` — that prefix appears on every volume (`my-apps_belegtools_mongodb_data`, etc.).
-
-**Service-name vs container-name split** (intentional, don't "fix"):
-
-| Service (compose key, DNS name on internal net) | container_name |
-|---|---|
-| `umami` | `belegtools-umami` |
-| `umami-db` | `belegtools-umami-db` |
-
-Belegtools' nginx upstream config references `umami` and `umami-db` by DNS — changing service names would break the image without a rebuild. The container_name is just for `docker ps` readability.
-
-**Volume naming:** every belegtools-stack volume is prefixed `belegtools_` (`belegtools_mongodb_data`, `belegtools_umami_db_data`). `n8n_data` is unprefixed because it's a separate stack.
+The project name is `my-apps`, taken from the `docker/my-apps/` directory name. Every container label shows `com.docker.compose.project=my-apps`, and that prefix lands on every volume (`my-apps_n8n_data`).
 
 ## Cloudflare tunnel mechanics
 
-- Tunnel name: `HomeLab` (managed in TF as `cloudflare_zero_trust_tunnel_cloudflared.this`)
-- The **tunnel token and tunnel ID regenerate on `terraform destroy`/`apply`**. Cloudflared's `CLOUDFLARE_TUNNEL_TOKEN` in `docker/my-apps/.env` will go stale. After any destroy/apply:
+- Tunnel name `HomeLab`, managed as `cloudflare_zero_trust_tunnel_cloudflared.this`.
+- The tunnel token and tunnel ID regenerate on every `terraform destroy` + `apply`, which leaves `CLOUDFLARE_TUNNEL_TOKEN` in `docker/my-apps/.env` stale. After any destroy/apply:
   ```sh
   NEW=$(terraform output -raw cloudflare_tunnel_token)
   sed -i.bak -E "s|^CLOUDFLARE_TUNNEL_TOKEN=.*|CLOUDFLARE_TUNNEL_TOKEN=$NEW|" docker/my-apps/.env
   docker compose -f docker/my-apps/docker-compose.yml up -d --force-recreate cloudflared
   ```
-- Ingress origins use **hostname `server.home`, not the IP** — codified in `TF_VAR_host_local_ip=server.home`. Don't switch back to a raw IP.
-- 4 active routes: `<ha_subdomain>.<root_domain>`, `<n8n_subdomain>.<root_domain>`, `<rfid_subdomain>.<root_domain>`, and the `<belegtools_domain>` apex (subdomains + root come from `TF_VAR_*` in `~/Git/home-lab/.env`). Plus catch-all 404.
+- Ingress origins use the hostname `server.home`, not the IP, pinned by `TF_VAR_host_local_ip=server.home`. Don't switch back to a raw IP.
+- Four active routes, all subdomains of the root domain: `<ha_subdomain>`, `<n8n_subdomain>`, `<rfid_subdomain>`, `<echo_subdomain>`. Prefixes come from `TF_VAR_*` in `~/Git/home-lab/.env`. Plus a catch-all 404.
 
 ## Home Assistant gotcha
 
-**`http.trusted_proxies` MUST include the NAS LAN subnet.** Cloudflared runs in `network_mode: host`, so its calls to `http://server.home:8123` appear to HA as coming from the NAS's LAN IP. Without the right trusted_proxies entry, HA returns `400 Bad Request` to every proxied request.
+`http.trusted_proxies` must include the NAS LAN subnet. Cloudflared runs in `network_mode: host`, so its calls to `http://server.home:8123` reach HA from the NAS's own LAN IP. Get this wrong and HA answers `400 Bad Request` to every proxied request.
 
 Configure at `~/Git/home-lab/ha/configuration.yaml`:
 ```yaml
@@ -91,13 +84,13 @@ http:
     - 127.0.0.1
 ```
 
-If you change LAN subnets, this is the file to update — and remember to `docker restart homeassistant` afterward.
+Change LAN subnets and this is the file to update, then `docker restart homeassistant`.
 
-The `ha/` directory is **gitignored** — HA's data (DB, backups, custom_components) lives only on the NAS. Don't try to track it under IaC; the repo's role is the compose mount only.
+`ha/` is gitignored. HA's data (database, backups, custom_components) lives only on the NAS. Don't try to bring it under IaC; this repo's job there is the compose mount and the sources in `homeassistant/`.
 
 ## Terraform workflow
 
-Run via the official image (no local terraform install on the NAS):
+Run from the official image, nothing is installed on the NAS:
 
 ```sh
 cd ~/Git/home-lab
@@ -107,31 +100,26 @@ docker run --rm \
   hashicorp/terraform:latest <subcommand>
 ```
 
-State drift to watch for:
-- The Cloudflare API auto-adds `origin_request = {}` to ingress entries; TF wants `null`. Harmless idempotent diff after manual UI edits.
-- `.terraform.lock.hcl` regularly shows uncommitted hash changes because each TF run uses a fresh container with different platform hashes. Ignore the diff unless you're intentionally bumping the provider.
+Two kinds of drift to expect:
+- The Cloudflare API adds `origin_request = {}` to ingress entries; TF wants `null`. A harmless idempotent diff after manual edits in the UI.
+- `.terraform.lock.hcl` keeps showing hash changes because each run uses a fresh container with different platform hashes. Ignore it unless you're bumping the provider on purpose.
 
 ## Watchtower
 
-Label-only mode (`WATCHTOWER_LABEL_ENABLE=true`). Only these auto-update:
-- `rfid-analyzer`
-- `belegtools`
-- `watchtower` itself
-
-Everything else (HA, n8n, postgres, mongo, cloudflared, umami) is updated manually — by design, to avoid surprise data-layer upgrades.
+Label-only mode (`WATCHTOWER_LABEL_ENABLE=true`). Only `rfid-analyzer` and watchtower itself auto-update. HA, n8n, and cloudflared are updated by hand, deliberately, so no data-layer upgrade lands unannounced.
 
 ## Cloudflare CLI access
 
-User has the `cf` shell function in `~/.zshrc` (Mac) that wraps `curl` + 1Password. **Path goes first, then any extra curl flags:**
+Mart has a `cf` shell function in `~/.zshrc` on the Mac wrapping `curl` and 1Password. Path first, extra curl flags after:
 
 ```sh
-cf /zones                                       # RO query (default)
-cf /user/tokens/verify                          # confirm token + RO scope
-cf --write /zones/<id>/dns_records -X DELETE    # use RW token
+cf /zones                                       # read-only query (default)
+cf /user/tokens/verify                          # confirm token and scope
+cf --write /zones/<id>/dns_records -X DELETE    # uses the RW token
 cf --write /zones/<id>/dns_records -X POST --data '{...}'
 ```
 
-The function (for reference / regeneration):
+The function, for reference or regeneration:
 
 ```sh
 cf() {
@@ -148,19 +136,19 @@ cf() {
 }
 ```
 
-Two tokens stored in 1P (personal vault, item names: `Cloudflare RO Token`, `Cloudflare RW Token`). Required scopes on the RW token: Zone DNS Edit + Zone Read + Account Cloudflare Tunnel Edit. Scoped to specific zones (not "All zones").
+Two tokens in the personal 1Password vault, items `Cloudflare RO Token` and `Cloudflare RW Token`. The RW token needs Zone DNS Edit, Zone Read, and Account Cloudflare Tunnel Edit, scoped to specific zones rather than "All zones".
 
 ## SSH access pattern
 
-From Mart's Mac (key-based, no password needed):
+From Mart's Mac, key-based, no password:
 ```sh
 ssh <user>@server.home '...command...'                              # one-shot
-ssh <user>@server.home                                              # interactive shell
+ssh <user>@server.home                                              # interactive
 ```
 
-When running NAS commands from Claude, always use absolute paths (`/usr/local/bin/docker`, `/usr/local/bin/git`) — the SSH `$PATH` is sparse. Don't try `cd` then `git` over SSH unless you've explicitly extended `$PATH`.
+Use absolute paths for NAS commands (`/usr/local/bin/docker`, `/usr/local/bin/git`); the SSH `$PATH` is sparse. Don't `cd` then call `git` over SSH unless you've extended `$PATH` first.
 
-For long-running NAS commands (terraform apply, image pulls, large copies), redirect to a log file on the NAS and tail it back — direct SSH inheritance of stdout can break under network blips:
+For anything long-running (terraform apply, image pulls, big copies), write to a log on the NAS and tail it back. Direct stdout inheritance over SSH breaks under network blips:
 
 ```sh
 ssh <user>@server.home '
@@ -171,31 +159,23 @@ tail -20 /tmp/tf-apply.log
 '
 ```
 
-Don't hard-code account or zone IDs anywhere — fetch them on demand:
+Never hard-code account or zone IDs. Fetch them:
 ```sh
-cf /accounts                  # list account IDs + names
-cf /zones                     # list zones (id, name, account)
+cf /accounts                  # account IDs and names
+cf /zones                     # zones (id, name, account)
 ```
-The single active CF account hosts three zones: the primary root domain (HA/n8n/sdr CNAMEs + SimpleLogin MX/DKIM), the belegtools apex domain (CNAME to tunnel), and one empty/unused zone.
+The active CF account holds three zones. This repo manages one of them, the primary root domain, carrying the HA/n8n/sdr/echo CNAMEs plus SimpleLogin MX and DKIM records. The other two are outside the terraform state; leave them alone.
 
-## Umami
+## Things deleted on purpose, don't recreate
 
-- App at `http://server.home:3001/` (local-network only, not exposed via tunnel)
-- Single user `admin`; password is bcrypt-hashed in DB. Default would be `umami` if never changed.
-- Postgres DB lives in volume `my-apps_belegtools_umami_db_data` (renamed from `my-apps_umami_db_data` this session — data migrated cp -a).
+- The belegtools stack: the `belegtools` and `belegtools-mongodb` containers, the umami and umami-db analytics pair that fed it, the `belegtools` compose network, `belegtools.tf`, and `TF_VAR_belegtools_domain_name`. Removed from this repo. The app's own source still lives in `MartBent/belegtools`.
+- `/volume1/docker/belegtools/`, `/volume1/docker/homeassistant/` (304 MB, predates the `ha/` mount), `/volume1/docker/n8n/data` (548 MB orphan bind-mount; the container uses the `my-apps_n8n_data` volume), `/volume1/docker/pihole/`, `synology-dashboard/`, `private/`
+- `~/${NPM_PACKAGES}/` and `~/%`, home-dir cruft from shell-expansion accidents
+- `cloudflare_dns_record.drive_record`. The `drive.<root_domain>` record is VPN-only now, not tunneled.
+- `TF_VAR_drive_prefix` and `TF_VAR_docker_host` from `.env`, no longer referenced
 
-## Things historically deleted (don't recreate)
+## User preferences, carry these to any session
 
-- `/volume1/docker/belegtools/` (compose stayed but `.env` was consolidated, then the whole dir removed)
-- `/volume1/docker/homeassistant/` (304 MB — old HA dir, predates the `ha/` repo mount)
-- `/volume1/docker/n8n/data` (548 MB orphan bind-mount; container uses docker volume `my-apps_n8n_data`)
-- `/volume1/docker/pihole/`, `synology-dashboard/`, `private/`
-- `~/${NPM_PACKAGES}/` and `~/%` (home dir cruft from shell-expansion accidents)
-- `cloudflare_dns_record.drive_record` resource (the `drive.<root_domain>` record is VPN-only now, not exposed via tunnel)
-- `TF_VAR_drive_prefix`, `TF_VAR_docker_host` from `.env` (no longer referenced)
-
-## User preferences (carry these to any session)
-
-- Prefers raw API + curl over CLI wrappers (skipped wrangler/flarectl/cloudflared CLI). Recipe pattern: scoped token in 1Password + shell function.
-- Will not weaken macOS security (Gatekeeper, xattrs) to make a binary work. Prefers uninstall over workaround.
-- Minimal tooling — fewer global installs, more shell functions that pull secrets on demand.
+- Prefers raw API plus curl over CLI wrappers; wrangler, flarectl, and the cloudflared CLI were all skipped. The pattern is a scoped token in 1Password behind a shell function.
+- Won't weaken macOS security (Gatekeeper, xattrs) to make a binary run. Uninstalls instead of working around it.
+- Minimal tooling. Fewer global installs, more shell functions that pull secrets on demand.

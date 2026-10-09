@@ -1,13 +1,13 @@
 /*
- * Smart Alarm Clock — custom Home Assistant panel.
+ * Smart Alarm Clock custom Home Assistant panel.
  *
- * A bespoke "Alarms" screen (sidebar route /alarms), wired to the live entities
- * and inheriting the active HA theme (colour is owned by the theme — this file
- * only reads HA CSS variables). Slim top bar with a menu button (raw custom
- * panels get no HA toolbar, so we provide one), clock hero, "next alarm"
- * summary, alarm slots (first 3 always shown; "Add" reveals more up to 8; extra
- * slots can be deleted), and Snooze/Dismiss that step forward while ringing.
- * Times are 24-hour.
+ * The "Alarms" screen on sidebar route /alarms, wired to the live entities.
+ * The theme owns every colour; this file only reads HA CSS variables. Layout is
+ * a slim top bar with a menu button (raw custom panels get no HA toolbar, so we
+ * provide one), a clock hero, a "next alarm" summary, and the alarm slots. The
+ * first 3 slots always show, "Add" reveals more up to 8, and the extra ones can
+ * be deleted. Snooze and Dismiss step the alarm forward while it rings. Times
+ * are 24-hour.
  *
  * Deploy: copy to <config>/www/alarms-panel.js and register in configuration.yaml:
  *   panel_custom:
@@ -45,7 +45,7 @@ const styles = `
   }
   * { box-sizing: border-box; }
 
-  /* top bar — raw panels get no HA toolbar, so provide the menu button */
+  /* top bar: raw panels get no HA toolbar, so provide the menu button */
   .topbar {
     position: sticky; top: 0; z-index: 2;
     height: 56px; display: flex; align-items: center; gap: 4px; padding: 0 4px 0 4px;

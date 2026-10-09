@@ -1,4 +1,4 @@
-// setup CNAME reccord for external access
+// CNAME record for external access
 resource "cloudflare_dns_record" "echo_record" {
   zone_id = local.zone_id
   name    = var.echo_prefix

@@ -1,9 +1,9 @@
-# Smart Alarm Clock — configure card (built-in cards only, no HACS needed).
+# Smart Alarm Clock configure card (built-in cards only, no HACS needed).
 #
 # Restyled for "Mart's Theme" (themes/mart.yaml): heading cards structure the
 # view, a glance card gives the clock prominence, and the flat hairline card
 # look comes entirely from the theme. It's the household default, so no per-card
-# theme override is needed — but you could pin it with:  theme: Mart's Theme
+# theme override is needed, though you can pin it with:  theme: Mart's Theme
 #
 # Paste into a dashboard: Edit dashboard → ⋮ → "Edit in YAML" and add this under
 # `cards:`, or "Add card → Manual" and paste one card at a time.

@@ -1,8 +1,8 @@
-# Smart Alarm Clock — standalone YAML dashboard.
+# Smart Alarm Clock standalone YAML dashboard.
 #
 # A dedicated dashboard (its own sidebar entry) for configuring the alarms, using
 # the modern "sections" view layout + the household "Mart's Theme"
-# (themes/mart.yaml). Built-in cards only — no HACS.
+# (themes/mart.yaml). Built-in cards only, no HACS.
 #
 # Install as a YAML-mode dashboard: copy this file to <config>/dashboards/alarms.yaml,
 # copy themes/mart.yaml to <config>/themes/, and register in

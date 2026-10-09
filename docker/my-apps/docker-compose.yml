@@ -8,80 +8,6 @@ services:
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  belegtools:
-    image: ghcr.io/martbent/belegtools:latest
-    container_name: belegtools
-    restart: unless-stopped
-    environment:
-      - APP_ENV=${APP_ENV}
-      - APP_DOMAIN=${APP_DOMAIN}
-      - MONGODB_URL=mongodb://${MONGO_USER}:${MONGO_PASSWORD}@belegtools-mongodb:27017
-      - MONGODB_DB=${MONGO_DB}
-    ports:
-      - "3000:80"
-    depends_on:
-      belegtools-mongodb:
-        condition: service_healthy
-      umami:
-        condition: service_started
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-    networks:
-      - default
-      - belegtools
-
-  belegtools-mongodb:
-    image: mongo:4.4
-    container_name: belegtools-mongodb
-    restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
-      - MONGO_INITDB_DATABASE=${MONGO_DB}
-    volumes:
-      - belegtools_mongodb_data:/data/db
-    networks:
-      - belegtools
-    healthcheck:
-      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  umami:
-    image: ghcr.io/umami-software/umami:postgresql-latest
-    container_name: belegtools-umami
-    restart: unless-stopped
-    ports:
-      - "3001:3000"
-    environment:
-      - DATABASE_URL=postgresql://${UMAMI_POSTGRES_USER}:${UMAMI_POSTGRES_PASSWORD}@umami-db:5432/${UMAMI_POSTGRES_DB}
-      - APP_SECRET=${UMAMI_APP_SECRET}
-    depends_on:
-      umami-db:
-        condition: service_healthy
-    networks:
-      - belegtools
-
-  umami-db:
-    image: postgres:16-alpine
-    container_name: belegtools-umami-db
-    restart: unless-stopped
-    environment:
-      - POSTGRES_USER=${UMAMI_POSTGRES_USER}
-      - POSTGRES_PASSWORD=${UMAMI_POSTGRES_PASSWORD}
-      - POSTGRES_DB=${UMAMI_POSTGRES_DB}
-    volumes:
-      - belegtools_umami_db_data:/var/lib/postgresql/data
-    networks:
-      - belegtools
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${UMAMI_POSTGRES_USER} -d ${UMAMI_POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    user: "postgres"
-
   homeassistant:
     image: ghcr.io/home-assistant/home-assistant:stable
     container_name: homeassistant
@@ -135,10 +61,4 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
 
 volumes:
-  belegtools_mongodb_data:
-  belegtools_umami_db_data:
   n8n_data:
-
-networks:
-  belegtools:
-    driver: bridge

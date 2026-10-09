@@ -1,18 +1,18 @@
-# Mart's Theme — Home Assistant theme  ·  "Japandi, technical"
+# Mart's Theme, a Home Assistant theme. "Japandi, technical"
 # ---------------------------------------------------------------------------
-# The household-wide theme for the whole HA environment (sidebar, dialogs,
-# inputs, cards, feedback colors) — not tied to any single dashboard. Tuned to
-# Mart's home: beige textured walls + warm oak wood-look tile flooring — Japandi
-# (Japanese + Scandinavian warm minimalism). Steered *technical, not organic*:
-# interactive controls are resolved in monochrome ink/stone with hairline
-# borders, a small 4px radius, and flat cards. Oak is the single warm accent —
-# an "active" entity glows warm; the controls themselves stay neutral.
+# Household-wide, covering the whole HA environment (sidebar, dialogs, inputs,
+# cards, feedback colors) rather than one dashboard. Tuned to Mart's home:
+# beige textured walls and warm oak wood-look tile flooring, so Japandi
+# (Japanese plus Scandinavian warm minimalism). Technical rather than organic.
+# Interactive controls are monochrome ink or stone with hairline borders, a 4px
+# radius, and flat cards. Oak is the one warm accent, so an active entity glows
+# warm while the controls around it stay neutral.
 #
-# Dual-mode: light (beige, daytime) and dark (warm charcoal, night). Selecting
-# "Mart's Theme" in your profile makes it follow HA's Auto/Light/Dark toggle
-# exactly like the built-in themes — no separate day/night themes to pick.
+# Two modes: light (beige, daytime) and dark (warm charcoal, night). Pick
+# "Mart's Theme" in your profile and it follows HA's Auto/Light/Dark toggle like
+# any built-in theme. There is no separate day and night theme to choose.
 #
-# Pure CSS-variable overrides — no HACS, no card-mod. Originated with the
+# CSS-variable overrides only, no HACS and no card-mod. Started in the
 # smart-alarm-clock project; lives here for now.
 #
 # Deploy:
@@ -35,12 +35,12 @@
 
   # =====================================================================
   modes:
-    # ---- LIGHT — beige wall + oak, ink controls -----------------------
+    # ---- LIGHT: beige wall + oak, ink controls ------------------------
     light:
-      primary-color: "#2B2823"           # sumi ink — technical controls
+      primary-color: "#2B2823"           # sumi ink, technical controls
       dark-primary-color: "#1C1A16"
       light-primary-color: "#4A463E"
-      accent-color: "#A87C4F"            # oak — the one warm accent
+      accent-color: "#A87C4F"            # oak, the one warm accent
 
       primary-background-color: "#E5DCCB" # beige wall
       secondary-background-color: "#EDE6D9"
@@ -103,7 +103,7 @@
       slider-track-color: "#CFC5B2"
       ha-slider-color: "#A87C4F"
 
-      # feedback — muted, on-palette (terracotta / ochre / olive / slate)
+      # feedback: muted, on-palette (terracotta / ochre / olive / slate)
       error-color: "#B4553F"
       warning-color: "#C08A3E"
       success-color: "#7E8B5C"
@@ -119,9 +119,9 @@
       rgb-primary-text-color: "51, 48, 42"
       rgb-card-background-color: "244, 239, 230"
 
-    # ---- DARK — warm charcoal + oak, stone controls -------------------
+    # ---- DARK: warm charcoal + oak, stone controls --------------------
     dark:
-      primary-color: "#D8CDB8"           # warm stone — technical controls (inverted)
+      primary-color: "#D8CDB8"           # warm stone, technical controls (inverted)
       dark-primary-color: "#B3A88F"
       light-primary-color: "#E8E0D2"
       accent-color: "#C08A54"            # oak, brightened for dark

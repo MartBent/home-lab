@@ -26,11 +26,6 @@ variable "echo_prefix" {
   default  = "echo"
   nullable = false
 }
-variable "belegtools_domain_name" {
-  type     = string
-  default  = "belegtools.nl"
-  nullable = false
-}
 variable "cloudflare_tunnel_name" {
   type     = string
   default  = "homelab-tunnel"
