@@ -57,8 +57,11 @@ services:
       - WATCHTOWER_POLL_INTERVAL=300
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_LABEL_ENABLE=true
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
+    # Deliberately carries no watchtower.enable label: with LABEL_ENABLE set it
+    # would watch itself, and that self-update died mid-run on 2026-10-23 and
+    # left nothing updating anything for 18 days. Nothing reported it, because
+    # a stopped watchtower cannot report. Update it by hand instead:
+    #   docker compose pull watchtower && docker compose up -d watchtower
 
 volumes:
   n8n_data:
