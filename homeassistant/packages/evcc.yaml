@@ -35,12 +35,16 @@ rest:
         device_class: battery
         state_class: measurement
         json_attributes_path: "$.loadpoints[0]"
-        json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc]
+        json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc,
+                          connected, phasesConfigured, phasesActive, maxCurrent]
 
       - name: evcc Mode
         unique_id: evcc_mode
         value_template: "{{ value_json.loadpoints[0].mode }}"
         icon: mdi:ev-station
+        # the car's repeating charge plans, which Solar switches off (rest_command.evcc_set_plans_active)
+        json_attributes_path: "$.vehicles.sim_car"
+        json_attributes: [repeatingPlans]
 
   # Price forecast (15-min slots, today + tomorrow after ~13:00) and evcc's chosen
   # charging slots for the active plan. Both feed www/evcc-price-card.js.
@@ -75,11 +79,25 @@ rest_command:
   evcc_set_mode:
     url: "http://server.home:7070/api/loadpoints/1/mode/{{ mode }}"
     method: post
+  # only ever called while the car is unplugged, see automation evcc_solar
+  evcc_set_phases:
+    url: "http://server.home:7070/api/loadpoints/1/phases/{{ phases }}"
+    method: post
+  # shortcut: switches every repeating plan on or off together; fine while there is one
+  evcc_set_plans_active:
+    url: "http://server.home:7070/api/vehicles/sim_car/plan/repeating"
+    method: post
+    content_type: application/json
+    payload: >-
+      [{% for p in state_attr('sensor.evcc_mode', 'repeatingPlans') or [] %}{{ dict(p, active=active) | tojson }}{{ ',' if not loop.last }}{% endfor %}]
 
 # Read by evcc's simulated car (mounted at /sim); a new token resets its SoC to 10%.
 # Remove together with the sim_* blocks in evcc.yaml once a real charger is in.
 shell_command:
   evcc_empty_simulated_car: "mkdir -p /config/evcc-sim && date +%s > /config/evcc-sim/drain"
+  # /sim/plug: "0" = unplugged (charger status A). No templates: they'd disable the shell redirect.
+  evcc_plug_in_simulated_car: "mkdir -p /config/evcc-sim && echo 1 > /config/evcc-sim/plug"
+  evcc_unplug_simulated_car: "mkdir -p /config/evcc-sim && echo 0 > /config/evcc-sim/plug"
 
 template:
   - select:
@@ -98,6 +116,16 @@ template:
           - action: homeassistant.update_entity
             target:
               entity_id: sensor.evcc_mode
+    switch:
+      - name: evcc Simulated car plugged in
+        unique_id: evcc_simulated_car_plugged
+        icon: mdi:ev-plug-type2
+        state: "{{ state_attr('sensor.evcc_vehicle_soc', 'connected') }}"
+        optimistic: true # evcc reads the plug file every cycle (~30 s)
+        turn_on:
+          - action: shell_command.evcc_plug_in_simulated_car
+        turn_off:
+          - action: shell_command.evcc_unplug_simulated_car
     button:
       - name: evcc Empty simulated car
         unique_id: evcc_empty_simulated_car
@@ -112,6 +140,10 @@ input_boolean:
   evcc_manual:
     name: evcc Manual schedule
     icon: mdi:gesture-tap-hold
+  # Solar: evcc Smart with the repeating plans off (surplus only), on 1 phase.
+  evcc_solar:
+    name: evcc Solar only
+    icon: mdi:solar-power-variant
 
 input_text:
   evcc_manual_hours:
@@ -154,3 +186,53 @@ automation:
               entity_id: select.evcc_charge_mode
             data:
               option: "{{ want }}"
+
+  - id: evcc_solar
+    alias: evcc solar mode and phases
+    description: >-
+      Solar = evcc Smart with the repeating plans off, so it charges from surplus only,
+      on 1 phase (starts at ~1.4 kW instead of ~4.1 kW on 3). The phase setting is only
+      sent while the car is unplugged; evcc applies it at the next plug-in, before power
+      flows. Never switch phases with a car connected: the Kia e-Niro can short L1-L2
+      when a session moves from 1 to 3 phases.
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.evcc_solar
+        to: [on, off]
+        id: solar
+      - trigger: state
+        entity_id: sensor.evcc_vehicle_soc
+        attribute: connected
+        to: false
+      - trigger: homeassistant
+        event: start
+    actions:
+      - variables:
+          solar: "{{ is_state('input_boolean.evcc_solar', 'on') }}"
+          phases: "{{ 1 if solar else 3 }}"
+      - if: "{{ trigger.id == 'solar' }}"
+        then:
+          - action: rest_command.evcc_set_plans_active
+            data:
+              active: "{{ not solar }}"
+          - if: "{{ solar }}"
+            then:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.evcc_manual
+              - action: select.select_option
+                target:
+                  entity_id: select.evcc_charge_mode
+                data:
+                  option: smart
+      # strictly false: an unavailable sensor (None) must never count as unplugged
+      - if: "{{ state_attr('sensor.evcc_vehicle_soc', 'connected') is sameas false and state_attr('sensor.evcc_vehicle_soc', 'phasesConfigured') != phases }}"
+        then:
+          - action: rest_command.evcc_set_phases
+            data:
+              phases: "{{ phases }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.evcc_vehicle_soc

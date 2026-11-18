@@ -191,6 +191,17 @@ views:
             cards:
               - type: custom:evcc-price-card
                 title: Simulated EV
+          # simulator controls; remove with the sim_* blocks in evcc.yaml once a real charger is in
+          - type: tile
+            entity: switch.evcc_simulated_car_plugged
+            name: Plugged in
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: button.evcc_empty_simulated_car
+            name: Empty the car
+            grid_options:
+              columns: 6
 
       - type: grid
         cards:

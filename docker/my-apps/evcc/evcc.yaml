@@ -65,20 +65,21 @@ tariffs:
       cache: 10m
     interval: 15m
 
-# Simulated 3-phase 11 kW charger with a 65 kWh car permanently plugged in.
+# Simulated 11 kW charger (3x16 A, switchable to 1 phase) with a 65 kWh car.
 # Charging stops by itself at 100%. Start/stop: evcc mode Fast/Off (or HA's
 # select.evcc_charge_mode). "Empty the car": HA's button.evcc_empty_simulated_car
 # writes a new token to /sim/drain; a changed token resets SoC to 10%.
+# Plug in/out: HA's switch.evcc_simulated_car_plugged writes /sim/plug.
 # State is in-memory: an evcc restart starts the car at 10% again.
 javascript:
   - vm: sim
     script: |
-      state = { enabled: false, current: 6, power: 0, kwh: 0, soc: 10, last: Date.now(), drain: null };
+      state = { enabled: false, current: 6, phases: 3, power: 0, kwh: 0, soc: 10, last: Date.now(), drain: null };
       function tick(drain) {
         var now = Date.now();
         if (drain !== undefined && state.drain !== null && drain !== state.drain) state.soc = 10;
         if (drain !== undefined) state.drain = drain;
-        state.power = state.enabled && state.soc < 100 ? state.current * 230 * 3 : 0;
+        state.power = state.enabled && state.soc < 100 ? state.current * 230 * state.phases : 0;
         var kwh = state.power * (now - state.last) / 3.6e9;
         state.kwh += kwh;
         state.soc = Math.min(state.soc + kwh / 65 * 100, 100);
@@ -88,10 +89,17 @@ javascript:
 chargers:
   - name: sim_charger
     type: custom
+    # plug = /sim/plug, written by HA's switch.evcc_simulated_car_plugged ("0" = unplugged)
     status:
       source: js
       vm: sim
-      script: 'tick(); state.power > 0 ? "C" : "B"'
+      script: 'tick(); plug.trim() === "0" ? "A" : state.power > 0 ? "C" : "B"'
+      in:
+        - name: plug
+          type: string
+          config:
+            source: script
+            cmd: cat /sim/plug
     enabled:
       source: js
       vm: sim
@@ -104,6 +112,11 @@ chargers:
       source: js
       vm: sim
       script: tick(); state.current = maxcurrent
+    # 1p/3p switching like a phase-switching wallbox; evcc only sends it while a car is connected
+    phases1p3p:
+      source: js
+      vm: sim
+      script: tick(); state.phases = phases
 
 vehicles:
   - name: sim_car
@@ -126,4 +139,5 @@ loadpoints:
     charger: sim_charger
     meter: sim_charge_meter
     vehicle: sim_car
-    mode: pv
+    # no default mode on purpose: evcc would reapply it on every restart and
+    # overrule the mode HA's Manual/Solar logic set; evcc keeps the last mode instead

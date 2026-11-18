@@ -1,9 +1,11 @@
 /*
  * evcc price card: the next 24 h of grid prices per quarter-hour (the EPEX/Zonneplan
- * granularity) with the quarters the car will charge, their cost, plus Smart / Manual / Fast.
+ * granularity) with the quarters the car will charge, their cost, plus Smart / Solar / Manual / Fast.
  *   Smart   evcc's plan picks the hours (oak bars)
  *   Manual  drag across the bars to paint the hours yourself; Clear = stay off.
  *           An HA automation (packages/evcc.yaml) runs evcc "now" inside them, "off" outside.
+ *   Solar   surplus only on 1 phase (Smart with the repeating plans off). Phases change only
+ *           while the car is unplugged (HA automation evcc_solar), never mid-session.
  *   Fast    charge now at full power; the bars show the projection until full
  *
  * Reads only HA entities (the browser can't reach evcc through the tunnel):
@@ -14,13 +16,14 @@
  *   power_entity     charge power in W
  *   manual_entity    input_boolean: Manual mode on/off
  *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
+ *   solar_entity     input_boolean: Solar mode on/off
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=21]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=22]
  */
 
-const VERSION = 21;
+const VERSION = 22;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -47,14 +50,16 @@ const DEFAULTS = {
   power_entity: "sensor.evcc_charge_power",
   manual_entity: "input_boolean.evcc_manual",
   hours_entity: "input_text.evcc_manual_hours",
+  solar_entity: "input_boolean.evcc_solar",
 };
 // No Off button: Manual with no hours painted is off. While Manual is on, its button reads "Clear".
 const MODES = [
   ["smart", "Smart"],
+  ["solar", "Solar"],
   ["manual", "Manual"],
   ["now", "Fast"],
 ];
-const LEGEND = { smart: "Planned charging", manual: "Your charging hours", now: "Charging until full" };
+const LEGEND = { smart: "Planned charging", solar: "Charging from surplus", manual: "Your charging hours", now: "Charging until full" };
 const HOUR = 3600e3;
 const QUARTER = 900e3;
 const SLOTS = 96; // quarters shown: 24 h starting with the current one
@@ -190,7 +195,9 @@ class EvccPriceCard extends HTMLElement {
 
   _mode(hass = this._hass) {
     const c = this._config;
-    return hass.states[c.manual_entity]?.state === "on" ? "manual" : hass.states[c.mode_entity]?.state;
+    if (hass.states[c.manual_entity]?.state === "on") return "manual";
+    if (hass.states[c.solar_entity]?.state === "on") return "solar";
+    return hass.states[c.mode_entity]?.state;
   }
 
   set hass(hass) {
@@ -208,7 +215,7 @@ class EvccPriceCard extends HTMLElement {
     }
     if (this._drag) return; // never rebuild the chart under a finger
     // Re-render only when one of our entities changed.
-    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.power_entity, c.manual_entity, c.hours_entity]
+    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.power_entity, c.manual_entity, c.hours_entity, c.solar_entity]
       .map((e) => hass.states[e]?.last_updated)
       .join("|") + epochQuarter(Date.now());
     if (sig === this._sig) return;
@@ -222,13 +229,13 @@ class EvccPriceCard extends HTMLElement {
     this._pending = { mode, until: Date.now() + 15000 };
     this._sig = null;
     this._render();
-    const manualOn = this._hass.states[c.manual_entity]?.state === "on";
     const call = (domain, service, data) => this._hass.callService(domain, service, data);
-    const done =
-      mode === "manual"
-        ? call("input_boolean", "turn_on", { entity_id: c.manual_entity })
-        : (manualOn ? call("input_boolean", "turn_off", { entity_id: c.manual_entity }) : Promise.resolve())
-            .then(() => call("select", "select_option", { entity_id: c.mode_entity, option: mode }));
+    // Manual and Solar are HA toggles (their automations drive evcc); only one is ever on
+    const toggle = (entity, on) =>
+      (this._hass.states[entity]?.state === "on") === on ? Promise.resolve() : call("input_boolean", on ? "turn_on" : "turn_off", { entity_id: entity });
+    const done = toggle(c.manual_entity, mode === "manual")
+      .then(() => toggle(c.solar_entity, mode === "solar"))
+      .then(() => (mode === "manual" || mode === "solar" ? null : call("select", "select_option", { entity_id: c.mode_entity, option: mode })));
     done.catch(() => {
       this._pending = null;
       this._sig = null;
@@ -346,14 +353,24 @@ class EvccPriceCard extends HTMLElement {
   }
 
   _status(st, slots) {
+    const text = this._modeStatus(st, slots);
+    // a phase change waits for the car to be unplugged (see automation evcc_solar)
+    const want = st.mode === "solar" ? 1 : 3;
+    if (st.connected && st.phasesConfigured && st.phasesConfigured !== want) return `${text}. ${want === 1 ? "1 phase" : "3 phases"} after you unplug`;
+    return text;
+  }
+
+  _modeStatus(st, slots) {
     const { soc, mode, power, planSoc, planTime, plan } = st;
     const kw = power > 0 ? `charging at ${(power / 1000).toFixed(1)} kW` : "";
+    if (st.connected === false) return mode === "solar" ? "Solar: not plugged in, charges on 1 phase from surplus" : "Car not plugged in";
     if (mode === "off") return "Off, not charging";
     if (mode === "manual") {
       if (!st.manual.size) return "Manual: no hours set, so the car stays off";
       return `Manual${kw ? `, ${kw}` : ""}: ${ranges(st.manual)}`;
     }
     if (soc >= 100) return "Car is full";
+    if (mode === "solar") return kw ? `Solar, ${kw} from surplus` : "Solar: waiting for surplus, no grid charging";
     if (mode === "now") {
       if (!kw) return "Fast: waiting for the car";
       const full = slots[slots.length - 1]; // the mode projection comes after the live slot
@@ -498,6 +515,8 @@ class EvccPriceCard extends HTMLElement {
       power: Number(s[c.power_entity]?.state) || 0,
       maxPower: Number(s[c.plan_entity]?.attributes?.power) || 0,
       remainingWh: Number(socAttr.chargeRemainingEnergy) || 0,
+      connected: socAttr.connected,
+      phasesConfigured: Number(socAttr.phasesConfigured) || 0,
       limit: Number(socAttr.effectiveLimitSoc) || 100,
       planSoc: socAttr.effectivePlanSoc,
       planTime,
@@ -506,6 +525,8 @@ class EvccPriceCard extends HTMLElement {
     // Wh per battery % from evcc's own remaining-energy estimate (charging losses included)
     st.whPerPct = st.remainingWh && st.limit > st.soc ? st.remainingWh / (st.limit - st.soc) : 650;
     if (!st.maxPower) st.maxPower = 11040;
+    // on 1 phase the car gets a third of the power (230 V x max current)
+    if (Number(socAttr.phasesActive) === 1) st.maxPower = 230 * (Number(socAttr.maxCurrent) || 16);
     const now = new Date();
     const slots = this._slots(st, now);
     const hours = quarterly(rates, slots, now);
@@ -521,7 +542,7 @@ class EvccPriceCard extends HTMLElement {
     const hasUnknown = hours.some((h) => h.value === null);
     const hint = editable
       ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
-      : "Smart follows the plan. Manual: paint the hours yourself. Fast: full power now, whatever the price.";
+      : "Smart follows the plan. Solar: own surplus only, 1 phase. Manual: paint the hours yourself. Fast: full power now.";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -568,7 +589,7 @@ class EvccPriceCard extends HTMLElement {
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
         .legend i.line { height: 2px; width: 14px; border-radius: 1px; background: var(--ink); vertical-align: 3px; }
         .legend i.unknown { background: color-mix(in srgb, var(--muted) 12%, transparent); }
-        .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 20px;
+        .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 20px;
                  background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); padding: 4px; }
         .modes button { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: none; color: var(--ink); min-height: 44px; padding: 0 4px;
                         border-radius: calc(var(--ha-card-border-radius, 12px) * 0.55); cursor: pointer;
