@@ -48,10 +48,22 @@ meters:
 
 tariffs:
   currency: EUR
+  # Zonneplan all-in (EPEX + markup + energy tax + VAT) from epexprijzen.nl. Same fetch
+  # as evcc's epexprijzen-nl template, which hard-codes a 1 h cache; written out so
+  # tomorrow's prices (published ~13:00) show up within 15 min instead of up to an hour.
   grid:
-    type: template
-    template: epexprijzen-nl
-    provider: zonneplan # all-in: EPEX + Zonneplan markup + energy tax + VAT
+    type: custom
+    forecast:
+      source: http
+      uri: https://epexprijzen.nl/api/v1/prices/zonneplan/quarterly
+      jq: |
+        (.today // []) + (.tomorrow // []) | map({
+          "start": (.t | strptime("%Y-%m-%dT%H:%M:%S%z") | strftime("%Y-%m-%dT%H:%M:%SZ")),
+          "end": (.t | strptime("%Y-%m-%dT%H:%M:%S%z") | mktime + 900 | strftime("%Y-%m-%dT%H:%M:%SZ")),
+          "value": .price
+        }) | tostring
+      cache: 10m
+    interval: 15m
 
 # Simulated 3-phase 11 kW charger with a 65 kWh car permanently plugged in.
 # Charging stops by itself at 100%. Start/stop: evcc mode Fast/Off (or HA's
