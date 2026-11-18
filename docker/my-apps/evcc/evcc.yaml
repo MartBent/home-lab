@@ -69,7 +69,7 @@ tariffs:
 # Charging stops by itself at 100%. Start/stop: evcc mode Fast/Off (or HA's
 # select.evcc_charge_mode). "Empty the car": HA's button.evcc_empty_simulated_car
 # writes a new token to /sim/drain; a changed token resets SoC to 10%.
-# Plug in/out: HA's switch.evcc_simulated_car_plugged writes /sim/plug.
+# Plug in/out: HA's input_boolean.evcc_simulated_car_plugged writes /sim/plug.
 # State is in-memory: an evcc restart starts the car at 10% again.
 javascript:
   - vm: sim
@@ -89,7 +89,7 @@ javascript:
 chargers:
   - name: sim_charger
     type: custom
-    # plug = /sim/plug, written by HA's switch.evcc_simulated_car_plugged ("0" = unplugged)
+    # plug = /sim/plug, written by HA's input_boolean.evcc_simulated_car_plugged ("0" = unplugged)
     status:
       source: js
       vm: sim
@@ -113,7 +113,9 @@ chargers:
       vm: sim
       script: tick(); state.current = maxcurrent
     # 1p/3p switching like a phase-switching wallbox; evcc only sends it while a car is connected.
-    # tos: confirms the script doesn't pause charging around a switch itself (evcc does)
+    # tos ("terms of service"): acknowledges that evcc calls this script directly, without
+    # stopping the charge around the switch, as old versions did. Fine here: our evcc_solar
+    # automation only lets phases change while unplugged, so the charger is off at the switch.
     tos: true
     phases1p3p:
       source: js

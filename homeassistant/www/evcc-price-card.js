@@ -12,18 +12,21 @@
  *   forecast_entity  attributes.rates  [{start, end, value}]  (sensor.evcc_price_forecast)
  *   plan_entity      attributes.plan / .power                  (sensor.evcc_charge_plan)
  *   soc_entity       state + effectivePlanSoc / effectivePlanTime / chargeRemainingEnergy
- *   mode_entity      select with options off / smart / now
+ *   mode_entity      select with options off / smart / now (only written: its optimistic state can go stale)
+ *   mode_sensor      evcc's actual mode, read for display
  *   power_entity     charge power in W
  *   manual_entity    input_boolean: Manual mode on/off
  *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
  *   solar_entity     input_boolean: Solar mode on/off
+ *   solar_forecast_entity  attributes.time / .global_tilted_irradiance (Open-Meteo, 15 min, UTC)
+ *   solar_kwp        panel peak power for that forecast; base_load = house use (W) it must cover first
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=22]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=26]
  */
 
-const VERSION = 22;
+const VERSION = 26;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -47,11 +50,16 @@ const DEFAULTS = {
   plan_entity: "sensor.evcc_charge_plan",
   soc_entity: "sensor.evcc_vehicle_soc",
   mode_entity: "select.evcc_charge_mode",
+  mode_sensor: "sensor.evcc_mode",
   power_entity: "sensor.evcc_charge_power",
   manual_entity: "input_boolean.evcc_manual",
   hours_entity: "input_text.evcc_manual_hours",
   solar_entity: "input_boolean.evcc_solar",
+  solar_forecast_entity: "sensor.solar_forecast",
+  solar_kwp: 4, // placeholder until the real panels are known
+  base_load: 300, // shortcut: a flat house load; a learned profile would be better once there's history
 };
+const PERFORMANCE = 0.85; // inverter, heat and wiring losses: typical for a home system
 // No Off button: Manual with no hours painted is off. While Manual is on, its button reads "Clear".
 const MODES = [
   ["smart", "Smart"],
@@ -197,7 +205,7 @@ class EvccPriceCard extends HTMLElement {
     const c = this._config;
     if (hass.states[c.manual_entity]?.state === "on") return "manual";
     if (hass.states[c.solar_entity]?.state === "on") return "solar";
-    return hass.states[c.mode_entity]?.state;
+    return hass.states[c.mode_sensor]?.state;
   }
 
   set hass(hass) {
@@ -215,7 +223,7 @@ class EvccPriceCard extends HTMLElement {
     }
     if (this._drag) return; // never rebuild the chart under a finger
     // Re-render only when one of our entities changed.
-    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.power_entity, c.manual_entity, c.hours_entity, c.solar_entity]
+    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_sensor, c.power_entity, c.manual_entity, c.hours_entity, c.solar_entity, c.solar_forecast_entity]
       .map((e) => hass.states[e]?.last_updated)
       .join("|") + epochQuarter(Date.now());
     if (sig === this._sig) return;
@@ -278,7 +286,8 @@ class EvccPriceCard extends HTMLElement {
     svg.querySelector(`[data-i="${i}"]`)?.classList.add("hover");
     const cx = g.left + (i + 0.5) * g.bw;
     const charging = svg.querySelector(`[data-i="${i}"]`)?.classList.contains("charging");
-    const text = `${hhmm(new Date(it.start))}–${hhmm(new Date(it.start + QUARTER))}  ${it.value === null ? "not published yet" : `${eur(it.value)}/kWh`}${charging ? "  · charging" : ""}`;
+    const sun = g.solar && it.pv >= 50 ? `  · sun ${(it.pv / 1000).toFixed(1)} kW` : "";
+    const text = `${hhmm(new Date(it.start))}–${hhmm(new Date(it.start + QUARTER))}  ${it.value === null ? "not published yet" : `${eur(it.value)}/kWh`}${sun}${charging ? "  · charging" : ""}`;
     const label = tip.querySelector("text");
     label.textContent = text;
     // anchor toward the middle so the label never runs off either edge
@@ -356,7 +365,7 @@ class EvccPriceCard extends HTMLElement {
     const text = this._modeStatus(st, slots);
     // a phase change waits for the car to be unplugged (see automation evcc_solar)
     const want = st.mode === "solar" ? 1 : 3;
-    if (st.connected && st.phasesConfigured && st.phasesConfigured !== want) return `${text}. ${want === 1 ? "1 phase" : "3 phases"} after you unplug`;
+    if (st.connected && st.phasesConfigured !== null && st.phasesConfigured !== want) return `${text}. ${want === 1 ? "1 phase" : "3 phases"} after you unplug`;
     return text;
   }
 
@@ -370,7 +379,10 @@ class EvccPriceCard extends HTMLElement {
       return `Manual${kw ? `, ${kw}` : ""}: ${ranges(st.manual)}`;
     }
     if (soc >= 100) return "Car is full";
-    if (mode === "solar") return kw ? `Solar, ${kw} from surplus` : "Solar: waiting for surplus, no grid charging";
+    if (mode === "solar") {
+      if (kw) return `Solar, ${kw} from surplus`;
+      return st.solarNext ? `Solar: waiting for surplus, expected from ${hhmm(new Date(st.solarNext))}` : "Solar: no surplus expected in the next 24 h";
+    }
     if (mode === "now") {
       if (!kw) return "Fast: waiting for the car";
       const full = slots[slots.length - 1]; // the mode projection comes after the live slot
@@ -390,7 +402,6 @@ class EvccPriceCard extends HTMLElement {
 
   _chart(hours, editable, st) {
     const known = hours.filter((h) => h.value !== null);
-    if (!known.length && !editable) return `<div class="empty">No price forecast yet</div>`;
     // Two panels in one SVG so the quarter columns line up exactly:
     //   battery %   socTop..socBot   (short)
     //   prices      pTop..H-bottom   (bars)
@@ -405,7 +416,9 @@ class EvccPriceCard extends HTMLElement {
     const bw = (plotR - left) / hours.length;
     const y = (v) => pTop + (H - pTop - bottom) * (1 - (v - min) / span);
     const ySoc = (p) => socBot - (socBot - socTop) * (p / 100);
-    this._geo = { left, bw, plotR, keys: hours.map((h) => h.q), items: hours };
+    const solar = st.mode === "solar" && hours.some((h) => h.pv !== null);
+    const pv = solar ? this._pvArea(hours, left, bw, pTop, H - bottom) : { fill: "", line: "" };
+    this._geo = { left, bw, plotR, keys: hours.map((h) => h.q), items: hours, solar };
     this._hoverI = null;
     // gaps shrink with the bars: ~9 px bars on desktop, ~3 px on a phone
     const gap = Math.min(1.5, bw * 0.25);
@@ -426,8 +439,9 @@ class EvccPriceCard extends HTMLElement {
       })
       .join("");
     const firstUnknown = hours.findIndex((h) => h.value === null);
-    const unknownNote = firstUnknown > 0
-      ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">published ~13:00</text>` : "";
+    // no prices at all = evcc hasn't delivered any (e.g. just restarted); otherwise tomorrow's are pending
+    const unknownNote = firstUnknown >= 0
+      ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">${firstUnknown === 0 ? "no prices from evcc yet" : "published ~13:00"}</text>` : "";
     const nowX = left + ((Date.now() % QUARTER) / QUARTER) * bw;
     // hairline grids: prices at max, half and zero (plus the minimum when negative); battery at 0/50/100%
     const ticks = [...new Set([max, max / 2, 0, min].map((v) => +v.toFixed(4)))];
@@ -439,7 +453,7 @@ class EvccPriceCard extends HTMLElement {
       .join("");
     return `
       <svg class="chart${editable ? " editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Expected battery level and electricity prices for the next 24 hours"}">
-        ${socGrid}${grid}${bars}
+        ${socGrid}${grid}${pv.fill}${bars}${pv.line}
         ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
         ${unknownNote}
         <g class="tip" visibility="hidden">
@@ -447,6 +461,16 @@ class EvccPriceCard extends HTMLElement {
           <text y="${socBot + 22}"></text>
         </g>
       </svg>`;
+  }
+
+  // Expected panel output on its own scale (the panels' realistic peak, kWp x losses, reaches
+  // the top of the price panel): a soft fill behind the bars, its outline on top of them.
+  _pvArea(hours, left, bw, top, base) {
+    const peak = Math.max(this._config.solar_kwp * 1000 * PERFORMANCE, ...hours.map((h) => h.pv ?? 0));
+    const yv = (w) => base - (base - top) * (w / peak);
+    const pts = hours.map((h, i) => `L${(left + (i + 0.5) * bw).toFixed(1)},${yv(h.pv ?? 0).toFixed(1)}`).join("");
+    const x0 = left + 0.5 * bw, x1 = (left + (hours.length - 0.5) * bw).toFixed(1);
+    return { fill: `<path class="pv" d="M${x0},${base}${pts}L${x1},${base}Z"/>`, line: `<path class="pv-line" d="M${pts.slice(1)}"/>` };
   }
 
   // Expected battery %: starts at the car's SoC now and rises through each charging
@@ -478,10 +502,12 @@ class EvccPriceCard extends HTMLElement {
 
   // Cost of the charging hours selected in the graph (plan, painted hours or Fast's
   // run to full) at the hourly prices; hours without a published price are left out.
-  _session(hours) {
+  _session(hours, mode) {
     const charged = hours.filter((h) => h.wh > 0);
     const kwh = charged.reduce((t, h) => t + h.wh, 0) / 1000;
     if (kwh < 0.05) return "";
+    // own surplus isn't bought at the grid price, so no euro figure for it
+    if (mode === "solar") return `<div class="session"><b>${kwh.toFixed(1)} kWh</b><span>from your own surplus</span></div>`;
     const priced = charged.filter((h) => h.value !== null);
     const pkwh = priced.reduce((t, h) => t + h.wh, 0) / 1000;
     const cost = priced.reduce((t, h) => t + (h.wh / 1000) * h.value, 0);
@@ -489,6 +515,16 @@ class EvccPriceCard extends HTMLElement {
       ? `${kwh.toFixed(1)} kWh, ${pkwh ? `${pkwh.toFixed(1)} priced so far` : "prices not published yet"}`
       : `${kwh.toFixed(1)} kWh at ${eur(cost / kwh)}/kWh`;
     return `<div class="session" title="Cost of the charging hours in the graph"><b>${pkwh ? eur(cost, 2) : "–"}</b><span>${sub}</span></div>`;
+  }
+
+  // Expected panel output in W per quarter start (ms). Open-Meteo's radiation is the mean of
+  // the preceding 15 min, so the value stamped T belongs to the quarter starting at T - 15 min.
+  _solarForecast() {
+    const a = this._hass.states[this._config.solar_forecast_entity]?.attributes;
+    const out = new Map();
+    if (!a?.time || !a?.global_tilted_irradiance) return out;
+    a.time.forEach((t, i) => out.set(Date.parse(`${t}Z`) - QUARTER, (a.global_tilted_irradiance[i] || 0) * this._config.solar_kwp * PERFORMANCE));
+    return out;
   }
 
   // A render failure shows inside the card (and in HA's log) instead of taking it down.
@@ -516,7 +552,7 @@ class EvccPriceCard extends HTMLElement {
       maxPower: Number(s[c.plan_entity]?.attributes?.power) || 0,
       remainingWh: Number(socAttr.chargeRemainingEnergy) || 0,
       connected: socAttr.connected,
-      phasesConfigured: Number(socAttr.phasesConfigured) || 0,
+      phasesConfigured: socAttr.phasesConfigured ?? null, // 0 = automatic: switches mid-session
       limit: Number(socAttr.effectiveLimitSoc) || 100,
       planSoc: socAttr.effectivePlanSoc,
       planTime,
@@ -530,6 +566,21 @@ class EvccPriceCard extends HTMLElement {
     const now = new Date();
     const slots = this._slots(st, now);
     const hours = quarterly(rates, slots, now);
+    const pv = this._solarForecast();
+    for (const h of hours) h.pv = pv.get(h.start) ?? null;
+    // Solar: forecast surplus (panels minus the house's base load) charges on 1 phase between
+    // the min and max current; below the minimum the car waits. Same projection as the other modes.
+    if (st.mode === "solar") {
+      const minW = 230 * (Number(socAttr.minCurrent) || 6), maxW = 230 * (Number(socAttr.maxCurrent) || 16);
+      for (const h of hours) {
+        const surplus = (h.pv ?? 0) - c.base_load;
+        const w = surplus >= minW ? Math.min(surplus, maxW) : 0;
+        if (!w) continue;
+        h.charging = true;
+        h.frac = Math.max(h.frac, ((h.start + QUARTER - Math.max(h.start, now.getTime())) / HOUR) * (w / st.maxPower));
+      }
+      st.solarNext = hours.find((h) => h.charging && h.start > now.getTime())?.start;
+    }
     // Wh charged per quarter at max power until the car reaches its limit; feeds the
     // battery line and the session price, so the two always agree
     let room = isNaN(soc) ? Infinity : Math.max((Math.max(st.limit, soc) - soc) * st.whPerPct, 0);
@@ -537,7 +588,7 @@ class EvccPriceCard extends HTMLElement {
       h.wh = Math.min(h.frac * st.maxPower, room);
       room -= h.wh;
     }
-    const session = this._session(hours);
+    const session = this._session(hours, st.mode);
     const editable = st.mode === "manual";
     const hasUnknown = hours.some((h) => h.value === null);
     const hint = editable
@@ -588,6 +639,9 @@ class EvccPriceCard extends HTMLElement {
         .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
         .legend i.line { height: 2px; width: 14px; border-radius: 1px; background: var(--ink); vertical-align: 3px; }
+        .legend i.sun { background: color-mix(in srgb, var(--warning-color, #d9a400) 45%, transparent); }
+        .pv { fill: color-mix(in srgb, var(--warning-color, #d9a400) 20%, transparent); stroke: none; pointer-events: none; }
+        .pv-line { fill: none; stroke: var(--warning-color, #d9a400); stroke-width: 1.5; stroke-linejoin: round; pointer-events: none; }
         .legend i.unknown { background: color-mix(in srgb, var(--muted) 12%, transparent); }
         .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 20px;
                  background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); padding: 4px; }
@@ -605,7 +659,6 @@ class EvccPriceCard extends HTMLElement {
         .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
         .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
         .modes button.on:disabled { opacity: 0.55; cursor: default; }
-        .empty { padding: 40px 0; text-align: center; color: var(--muted); }
       </style>
       <ha-card>
         <div class="head">
@@ -619,6 +672,7 @@ class EvccPriceCard extends HTMLElement {
         <div class="legend">
           ${LEGEND[st.mode] ? `<span><i style="background: var(--accent)"></i>${LEGEND[st.mode]}</span>` : ""}
           <span><i style="background: var(--bar)"></i>Price per 15 min</span>
+          ${st.mode === "solar" && pv.size ? `<span><i class="sun"></i>Expected solar (${c.solar_kwp} kWp)</span>` : ""}
           ${isNaN(soc) ? "" : `<span><i class="line"></i>Expected battery</span>`}
           ${hasUnknown ? `<span><i class="unknown"></i>Not published yet</span>` : ""}
         </div>

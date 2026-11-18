@@ -36,7 +36,7 @@ rest:
         state_class: measurement
         json_attributes_path: "$.loadpoints[0]"
         json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc,
-                          connected, phasesConfigured, phasesActive, maxCurrent]
+                          connected, phasesConfigured, phasesActive, minCurrent, maxCurrent]
 
       - name: evcc Mode
         unique_id: evcc_mode
@@ -49,7 +49,8 @@ rest:
   # Price forecast (15-min slots, today + tomorrow after ~13:00) and evcc's chosen
   # charging slots for the active plan. Both feed www/evcc-price-card.js.
   - resource: http://server.home:7070/api/tariff/grid
-    scan_interval: 900
+    # 5 min: after an evcc restart the first fetch can come back empty; local and cheap
+    scan_interval: 300
     sensor:
       - name: evcc Price forecast
         unique_id: evcc_price_forecast
@@ -57,6 +58,21 @@ rest:
         value_template: "{{ (value_json.rates | last).end if value_json.rates else none }}"
         device_class: timestamp
         json_attributes: [rates]
+
+  # Expected sunlight on the panels per 15 min (W/m², UTC), from Open-Meteo. The URL is in
+  # the untracked secrets.yaml because it holds the home coordinates (this repo is public):
+  #   https://api.open-meteo.com/v1/forecast?latitude=..&longitude=..&minutely_15=global_tilted_irradiance
+  #     &tilt=35&azimuth=0&forecast_days=2&timezone=GMT     (azimuth 0 = south, -90 east, 90 west)
+  # The card turns it into watts with its solar_kwp option.
+  - resource: !secret open_meteo_solar_url
+    scan_interval: 1800
+    sensor:
+      - name: Solar forecast
+        unique_id: solar_forecast
+        value_template: "{{ value_json.minutely_15.global_tilted_irradiance | max }}"
+        unit_of_measurement: W/m²
+        json_attributes_path: "$.minutely_15"
+        json_attributes: [time, global_tilted_irradiance]
 
   - resource: http://server.home:7070/api/loadpoints/1/plan
     scan_interval: 60
@@ -73,6 +89,7 @@ recorder:
     entities:
       - sensor.evcc_price_forecast
       - sensor.evcc_charge_plan
+      - sensor.solar_forecast
 
 # evcc's API is unauthenticated on the LAN for mode changes.
 rest_command:
@@ -116,16 +133,6 @@ template:
           - action: homeassistant.update_entity
             target:
               entity_id: sensor.evcc_mode
-    switch:
-      - name: evcc Simulated car plugged in
-        unique_id: evcc_simulated_car_plugged
-        icon: mdi:ev-plug-type2
-        state: "{{ state_attr('sensor.evcc_vehicle_soc', 'connected') }}"
-        optimistic: true # evcc reads the plug file every cycle (~30 s)
-        turn_on:
-          - action: shell_command.evcc_plug_in_simulated_car
-        turn_off:
-          - action: shell_command.evcc_unplug_simulated_car
     button:
       - name: evcc Empty simulated car
         unique_id: evcc_empty_simulated_car
@@ -140,6 +147,13 @@ input_boolean:
   evcc_manual:
     name: evcc Manual schedule
     icon: mdi:gesture-tap-hold
+  # Simulated car's plug, written to /sim/plug by automation evcc_simulated_car_plug.
+  # A plain toggle on purpose: an optimistic template switch went stale. evcc sees a change
+  # within its 30 s cycle; the card shows evcc's own "connected".
+  evcc_simulated_car_plugged:
+    name: evcc Simulated car plugged in
+    icon: mdi:ev-plug-type2
+    initial: true # matches /sim/plug's default; an HA restart plugs the simulated car back in
   # Solar: evcc Smart with the repeating plans off (surplus only), on 1 phase.
   evcc_solar:
     name: evcc Solar only
@@ -166,6 +180,9 @@ automation:
         entity_id:
           - input_text.evcc_manual_hours
           - input_boolean.evcc_manual
+      # evcc's real mode drifted (e.g. a racing mode change): put it back
+      - trigger: state
+        entity_id: sensor.evcc_mode
       - trigger: homeassistant
         event: start
     conditions:
@@ -179,13 +196,15 @@ automation:
             {% set bits = s.split(':')[1] if s is match('^[0-9]+:[0-9a-f]*$') else '' %}
             {% set i = (now().timestamp() // 900) | int - (s.split(':')[0] | int(0)) %}
             {% if 0 <= i < bits | length * 4 and ((bits[i // 4] | int(0, 16)) // 2 ** (3 - i % 4)) % 2 %}now{% else %}off{% endif %}
-      - if: "{{ states('select.evcc_charge_mode') != want }}"
+      # compare with what evcc reports, not the optimistic select, which can be stale
+      - if: "{{ states('sensor.evcc_mode') != want }}"
         then:
-          - action: select.select_option
-            target:
-              entity_id: select.evcc_charge_mode
+          - action: rest_command.evcc_set_mode
             data:
-              option: "{{ want }}"
+              mode: "{{ want }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.evcc_mode
 
   - id: evcc_solar
     alias: evcc solar mode and phases
@@ -200,7 +219,7 @@ automation:
     triggers:
       - trigger: state
         entity_id: input_boolean.evcc_solar
-        to: [on, off]
+        to: ["on", "off"] # quoted: bare on/off are YAML booleans
         id: solar
       - trigger: state
         entity_id: sensor.evcc_vehicle_soc
@@ -222,11 +241,12 @@ automation:
               - action: input_boolean.turn_off
                 target:
                   entity_id: input_boolean.evcc_manual
-              - action: select.select_option
-                target:
-                  entity_id: select.evcc_charge_mode
+              - action: rest_command.evcc_set_mode
                 data:
-                  option: smart
+                  mode: smart
+              - action: homeassistant.update_entity
+                target:
+                  entity_id: sensor.evcc_mode
       # strictly false: an unavailable sensor (None) must never count as unplugged
       - if: "{{ state_attr('sensor.evcc_vehicle_soc', 'connected') is sameas false and state_attr('sensor.evcc_vehicle_soc', 'phasesConfigured') != phases }}"
         then:
@@ -236,3 +256,17 @@ automation:
           - action: homeassistant.update_entity
             target:
               entity_id: sensor.evcc_vehicle_soc
+
+  - id: evcc_simulated_car_plug
+    alias: evcc simulated car plug
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: input_boolean.evcc_simulated_car_plugged
+        to: ["on", "off"]
+    actions:
+      - if: "{{ trigger.to_state.state == 'on' }}"
+        then:
+          - action: shell_command.evcc_plug_in_simulated_car
+        else:
+          - action: shell_command.evcc_unplug_simulated_car

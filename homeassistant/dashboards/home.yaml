@@ -193,13 +193,14 @@ views:
                 title: Simulated EV
           # simulator controls; remove with the sim_* blocks in evcc.yaml once a real charger is in
           - type: tile
-            entity: switch.evcc_simulated_car_plugged
+            entity: input_boolean.evcc_simulated_car_plugged
             name: Plugged in
             grid_options:
               columns: 6
           - type: tile
             entity: button.evcc_empty_simulated_car
             name: Empty the car
+            hide_state: true # a button's state is its last press, "Unknown" until then
             grid_options:
               columns: 6
 
