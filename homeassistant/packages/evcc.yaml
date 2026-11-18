@@ -35,7 +35,7 @@ rest:
         device_class: battery
         state_class: measurement
         json_attributes_path: "$.loadpoints[0]"
-        json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging]
+        json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc]
 
       - name: evcc Mode
         unique_id: evcc_mode
@@ -104,3 +104,50 @@ template:
         icon: mdi:car-arrow-left
         press:
           - action: shell_command.evcc_empty_simulated_car
+
+# Manual mode: hours painted on the dashboard graph (www/evcc-price-card.js).
+# Stored as epoch hours (unix time // 3600), comma separated; 24 h fits in 255 chars.
+input_boolean:
+  evcc_manual:
+    name: evcc Manual schedule
+    icon: mdi:gesture-tap-hold
+
+input_text:
+  evcc_manual_hours:
+    name: evcc Manual hours
+    max: 255
+
+automation:
+  - id: evcc_manual_schedule
+    alias: evcc manual schedule
+    description: >-
+      While Manual is on, charge (evcc "now") only in the hours painted on the
+      dashboard graph and keep evcc off outside them. No hours set = off.
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: time_pattern
+        minutes: 0
+        seconds: 5
+      - trigger: state
+        entity_id:
+          - input_text.evcc_manual_hours
+          - input_boolean.evcc_manual
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: input_boolean.evcc_manual
+        state: "on"
+    actions:
+      - variables:
+          hour: "{{ (now().timestamp() // 3600) | int }}"
+          hours: "{{ states('input_text.evcc_manual_hours').split(',') | select('match', '^[0-9]+$') | map('int') | list }}"
+          want: "{{ 'now' if hour in hours else 'off' }}"
+      - if: "{{ states('select.evcc_charge_mode') != want }}"
+        then:
+          - action: select.select_option
+            target:
+              entity_id: select.evcc_charge_mode
+            data:
+              option: "{{ want }}"
