@@ -17,10 +17,10 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=10]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=12]
  */
 
-const VERSION = 10;
+const VERSION = 12;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -48,8 +48,8 @@ const DEFAULTS = {
   manual_entity: "input_boolean.evcc_manual",
   hours_entity: "input_text.evcc_manual_hours",
 };
+// No Off button: Manual with no hours painted is off. While Manual is on, its button reads "Clear".
 const MODES = [
-  ["off", "Off"],
   ["smart", "Smart"],
   ["manual", "Manual"],
   ["now", "Fast"],
@@ -66,8 +66,10 @@ const epochHour = (ms) => Math.round(ms / HOUR);
 const parseHours = (s) => new Set(String(s || "").split(",").filter((x) => /^\d+$/.test(x)).map(Number));
 
 // Fixed window of the next AHEAD hours. 15-min rates are averaged per hour; an hour
-// without rates yet (tomorrow before ~13:00) gets value null. charging = any slot overlaps.
+// without rates yet (tomorrow before ~13:00) gets value null. charging = any slot overlaps;
+// frac = the share of the hour (from now on) spent charging, for the battery projection.
 function hourly(rates, slots, now) {
+  const nowMs = now.getTime();
   const sums = new Map();
   for (const r of rates) {
     const s = new Date(r.start);
@@ -82,11 +84,14 @@ function hourly(rates, slots, now) {
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + i).getTime();
     const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + i + 1).getTime();
     const s = sums.get(start);
+    const from = Math.max(start, nowMs);
+    const ms = slots.reduce((t, [a, b]) => t + Math.max(0, Math.min(b, end) - Math.max(a, from)), 0);
     return {
       start,
       hour: epochHour(start),
       value: s ? s.sum / s.n : null,
       charging: slots.some(([a, b]) => a < end && b > start),
+      frac: Math.min(ms / HOUR, 1),
       current: i === 0,
     };
   });
@@ -321,16 +326,19 @@ class EvccPriceCard extends HTMLElement {
     return `Plan ${planSoc}% by ${t}, charges from ${hhmm(first)}`;
   }
 
-  _chart(hours, editable) {
+  _chart(hours, editable, st) {
     const known = hours.filter((h) => h.value !== null);
     if (!known.length && !editable) return `<div class="empty">No price forecast yet</div>`;
-    const W = Math.max((this._w || 720) - 40, 240), H = 172, top = 16, bottom = 22, left = 40; // 40 = card padding
+    // left gutter: price axis; right gutter: battery % axis. 40 = card padding
+    const W = Math.max((this._w || 720) - 40, 240), H = 172, top = 16, bottom = 22, left = 40, right = 34;
+    const plotR = W - right;
     const vals = known.length ? known.map((h) => h.value) : [0.3];
     const max = Math.max(...vals), min = Math.min(0, ...vals);
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
     const span = max - min || 1;
-    const bw = (W - left) / hours.length;
+    const bw = (plotR - left) / hours.length;
     const y = (v) => top + (H - top - bottom) * (1 - (v - min) / span);
+    const ySoc = (p) => H - bottom - (H - bottom - top) * (p / 100);
     this._geo = { left, bw, hours: hours.map((h) => h.hour) };
     const bars = hours
       .map((h, i) => {
@@ -354,26 +362,45 @@ class EvccPriceCard extends HTMLElement {
     if (known.length) {
       const cheapest = known.reduce((a, b) => (b.value < a.value ? b : a));
       const ci = hours.indexOf(cheapest);
-      const cheapX = Math.min(Math.max(left + ci * bw + bw / 2, left + 22), W - 22); // keep the label off the axis
-      // halo (paint-order stroke in the card colour) keeps it legible over bars and the now line
+      const cheapX = Math.min(Math.max(left + ci * bw + bw / 2, left + 22), plotR - 22); // keep the label off the axes
+      // halo (paint-order stroke in the card colour) keeps it legible over bars and lines
       cheapMark = `<text class="cheap" x="${cheapX}" y="${y(cheapest.value) - 6}">${eur(cheapest.value)}</text>`;
     }
     const firstUnknown = hours.findIndex((h) => h.value === null);
     const unknownNote = firstUnknown > 0
-      ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${y(avg) - 8}">published ~13:00</text>` : "";
+      ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">published ~13:00</text>` : "";
     const nowX = left + (new Date().getMinutes() / 60) * bw;
     // hairline grid at max, half and zero (plus the minimum when prices go negative)
     const ticks = [...new Set([max, max / 2, 0, min].map((v) => +v.toFixed(4)))];
     const grid = ticks
-      .map((v) => `<line class="${v === 0 ? "base" : "grid"}" x1="${left}" x2="${W}" y1="${y(v)}" y2="${y(v)}"/><text class="y" x="${left - 8}" y="${y(v) + 4}">${eur(v, 2)}</text>`)
+      .map((v) => `<line class="${v === 0 ? "base" : "grid"}" x1="${left}" x2="${plotR}" y1="${y(v)}" y2="${y(v)}"/><text class="y" x="${left - 8}" y="${y(v) + 4}">${eur(v, 2)}</text>`)
       .join("");
-    const label = editable ? "Drag across the hours the car should charge" : "Electricity prices for the next 24 hours";
+    const socAxis = [0, 50, 100].map((p) => `<text class="y2" x="${plotR + 6}" y="${ySoc(p) + 4}">${p}%</text>`).join("");
     return `
-      <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${label}">
-        ${grid}${bars}
+      <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Electricity prices and expected battery level for the next 24 hours"}">
+        ${grid}${socAxis}${bars}
         <line class="now" x1="${nowX}" x2="${nowX}" y1="${top - 8}" y2="${H - bottom}"/>
+        ${this._socLine(hours, st, nowX, left, bw, ySoc, plotR)}
         ${cheapMark}${unknownNote}
       </svg>`;
+  }
+
+  // Expected battery %: starts at the car's SoC now and rises through each charging
+  // hour at the max charge power, using evcc's own Wh-per-percent (losses included).
+  _socLine(hours, st, nowX, left, bw, ySoc, plotR) {
+    if (isNaN(st.soc)) return "";
+    const cap = st.limit || 100;
+    let soc = Math.min(st.soc, 100);
+    const pts = [[nowX, soc]];
+    hours.forEach((h, i) => {
+      soc = Math.min(soc + (h.frac * st.maxPower) / st.whPerPct, Math.max(cap, st.soc));
+      pts.push([left + (i + 1) * bw, soc]);
+    });
+    const d = pts.map(([x, p], i) => `${i ? "L" : "M"}${x.toFixed(1)},${ySoc(p).toFixed(1)}`).join("");
+    const [lx, lp] = pts[pts.length - 1];
+    // end label sits just above the line, inside the plot
+    return `<path class="soc-line" d="${d}"/><circle class="soc-dot" cx="${nowX}" cy="${ySoc(pts[0][1])}" r="3"/>
+      <text class="soc-end" x="${Math.min(lx, plotR) - 2}" y="${ySoc(lp) - 6}">${Math.round(lp)}%</text>`;
   }
 
   // A render failure shows inside the card (and in HA's log) instead of taking it down.
@@ -405,6 +432,9 @@ class EvccPriceCard extends HTMLElement {
       planTime,
       plan: s[c.plan_entity]?.attributes?.plan,
     };
+    // Wh per battery % from evcc's own remaining-energy estimate (charging losses included)
+    st.whPerPct = st.remainingWh && st.limit > st.soc ? st.remainingWh / (st.limit - st.soc) : 650;
+    if (!st.maxPower) st.maxPower = 11040;
     const now = new Date();
     const slots = this._slots(st, now);
     const hours = hourly(rates, slots, now);
@@ -413,8 +443,8 @@ class EvccPriceCard extends HTMLElement {
     const curRate = rates.find((r) => new Date(r.start) <= now && now < new Date(r.end));
     const hasUnknown = hours.some((h) => h.value === null);
     const hint = editable
-      ? "Drag across the hours the car should charge. Outside them it stays off."
-      : "Smart charges in the planned hours. Fast charges now at full power, whatever the price.";
+      ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
+      : "Smart follows the plan. Manual: paint the hours yourself. Fast: full power now, whatever the price.";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -443,21 +473,28 @@ class EvccPriceCard extends HTMLElement {
         .grid { stroke: var(--divider-color); stroke-dasharray: 1 3; }
         .base { stroke: var(--divider-color); }
         .x, .y, .cheap, .note { font-size: 11px; fill: var(--muted); pointer-events: none; }
+        .note { paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .x, .cheap, .note { text-anchor: middle; }
         .y { text-anchor: end; }
+        .y2 { font-size: 11px; fill: var(--muted); pointer-events: none; }
+        .soc-line { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round; pointer-events: none; }
+        .soc-dot { fill: var(--ink); pointer-events: none; }
+        .soc-end { font-size: 11px; font-weight: 500; fill: var(--ink); text-anchor: end; pointer-events: none;
+                   paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .cheap { fill: var(--ink); font-weight: 500; paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .now { stroke: var(--ink); stroke-width: 1; pointer-events: none; }
         .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+        .legend i.line { height: 2px; width: 14px; border-radius: 1px; background: var(--ink); vertical-align: 3px; }
         .legend i.dashed { box-sizing: border-box; border: 1px dashed color-mix(in srgb, var(--muted) 60%, transparent); }
-        .modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-top: 20px;
+        .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 20px;
                  background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); padding: 4px; }
         .modes button { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: none; color: var(--ink); min-height: 44px; padding: 0 4px;
                         border-radius: calc(var(--ha-card-border-radius, 12px) * 0.55); cursor: pointer;
                         transition: background-color 140ms cubic-bezier(0.16, 1, 0.3, 1), color 140ms, transform 90ms;
                         -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
         .modes button:hover:not(.on) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
-        .modes button:focus-visible, .clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .modes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .modes button:active { transform: scale(0.97); }
         .modes button.on { background: var(--primary-color); color: var(--text-primary-color); }
         .modes button.busy { animation: busy 900ms ease-in-out infinite alternate; }
@@ -465,10 +502,7 @@ class EvccPriceCard extends HTMLElement {
         @media (prefers-reduced-motion: reduce) { .modes button, .bar { transition: none; } .modes button.busy { animation: none; } }
         .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
         .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
-        .clear { flex: none; font: inherit; font-size: 13px; font-weight: 500; color: var(--ink); background: none; min-height: 36px; padding: 0 14px;
-                 border: 1px solid var(--divider-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.55); cursor: pointer; }
-        .clear:hover:not(:disabled) { background: color-mix(in srgb, var(--ink) 7%, transparent); }
-        .clear:disabled { color: var(--muted); cursor: default; opacity: 0.6; }
+        .modes button.on:disabled { opacity: 0.55; cursor: default; }
         .empty { padding: 40px 0; text-align: center; color: var(--muted); }
       </style>
       <ha-card>
@@ -481,18 +515,25 @@ class EvccPriceCard extends HTMLElement {
         </div>
         <div class="soc" role="progressbar" aria-label="Battery" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${isNaN(soc) ? 0 : Math.round(soc)}"><i></i></div>
         <div class="soc-label"><span>Battery ${isNaN(soc) ? "–" : soc.toFixed(0)}%</span><span>${st.planSoc && st.mode === "smart" ? `target ${st.planSoc}%` : ""}</span></div>
-        ${this._chart(hours, editable)}
+        ${this._chart(hours, editable, st)}
         <div class="legend">
           ${LEGEND[st.mode] ? `<span><i style="background: var(--accent)"></i>${LEGEND[st.mode]}</span>` : ""}
           <span><i style="background: var(--bar)"></i>Price per hour</span>
+          ${isNaN(soc) ? "" : `<span><i class="line"></i>Battery</span>`}
           ${hasUnknown ? `<span><i class="dashed"></i>Not published yet</span>` : ""}
         </div>
         <div class="modes" role="group" aria-label="Charging mode">
-          ${MODES.map(([m, label]) => `<button data-mode="${m}" aria-pressed="${st.mode === m}" class="${st.mode === m ? "on" : ""}${this._pending?.mode === m ? " busy" : ""}">${label}</button>`).join("")}
+          ${MODES.map(([m, label]) => {
+            const on = st.mode === m, busy = this._pending?.mode === m ? " busy" : "";
+            // selected Manual turns into Clear; with nothing painted there is nothing to clear
+            if (m === "manual" && on) {
+              return `<button data-action="clear" class="on${busy}" aria-label="Clear charging hours" ${st.manual.size ? "" : "disabled"}>Clear</button>`;
+            }
+            return `<button data-mode="${m}" aria-pressed="${on}" class="${on ? "on" : ""}${busy}">${label}</button>`;
+          }).join("")}
         </div>
         <div class="foot">
           <div class="hint">${hint}</div>
-          ${editable ? `<button class="clear" data-action="clear" ${st.manual.size ? "" : "disabled"}>Clear</button>` : ""}
         </div>
       </ha-card>`;
   }
