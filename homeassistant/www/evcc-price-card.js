@@ -1,6 +1,6 @@
 /*
- * evcc price card: the next 24 h of grid prices with the hours the car will charge,
- * the cost of those hours, plus Smart / Manual / Fast.
+ * evcc price card: the next 24 h of grid prices per quarter-hour (the EPEX/Zonneplan
+ * granularity) with the quarters the car will charge, their cost, plus Smart / Manual / Fast.
  *   Smart   evcc's plan picks the hours (oak bars)
  *   Manual  drag across the bars to paint the hours yourself; Clear = stay off.
  *           An HA automation (packages/evcc.yaml) runs evcc "now" inside them, "off" outside.
@@ -13,14 +13,14 @@
  *   mode_entity      select with options off / smart / now
  *   power_entity     charge power in W
  *   manual_entity    input_boolean: Manual mode on/off
- *   hours_entity     input_text: painted hours as epoch hours (unix time // 3600), comma separated
+ *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=18]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=21]
  */
 
-const VERSION = 18;
+const VERSION = 21;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -56,57 +56,67 @@ const MODES = [
 ];
 const LEGEND = { smart: "Planned charging", manual: "Your charging hours", now: "Charging until full" };
 const HOUR = 3600e3;
-const AHEAD = 24; // hours shown, starting with the current one
+const QUARTER = 900e3;
+const SLOTS = 96; // quarters shown: 24 h starting with the current one
 const pad = (n) => String(n).padStart(2, "0");
 const hhmm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 // Same unit and precision as HA's own price entity (EUR/kWh, 3 decimals), so the
 // card never contradicts the price chip; axis labels drop to 2 decimals.
 const eur = (v, digits = 3) => `€${v.toFixed(digits)}`;
-const epochHour = (ms) => Math.round(ms / HOUR);
-const parseHours = (s) => new Set(String(s || "").split(",").filter((x) => /^\d+$/.test(x)).map(Number));
+const epochQuarter = (ms) => Math.floor(ms / QUARTER);
 
-// Fixed window of the next AHEAD hours. 15-min rates are averaged per hour; an hour
-// without rates yet (tomorrow before ~13:00) gets value null. charging = any slot overlaps;
-// frac = the share of the hour (from now on) spent charging, for the battery projection.
-function hourly(rates, slots, now) {
+// Painted quarters as "<base>:<hex>": base = epoch quarter (unix time // 900) of the first
+// bit, then one bit per quarter, most significant bit first in each hex digit. 24 hex
+// digits cover the whole window, so it always fits input_text's 255 characters.
+// The HA automation (packages/evcc.yaml) decodes the same format.
+function parseQuarters(value) {
+  const out = new Set();
+  const m = /^(\d+):([0-9a-f]*)$/.exec(String(value || ""));
+  if (!m) return out;
+  [...m[2]].forEach((c, d) => {
+    for (let b = 0; b < 4; b++) if (parseInt(c, 16) & (8 >> b)) out.add(+m[1] + d * 4 + b);
+  });
+  return out;
+}
+function encodeQuarters(sel, base) {
+  const digits = Array(SLOTS / 4).fill(0);
+  for (const q of sel) if (q >= base && q < base + SLOTS) digits[(q - base) >> 2] |= 8 >> ((q - base) & 3);
+  const hex = digits.map((d) => d.toString(16)).join("").replace(/0+$/, "");
+  return hex ? `${base}:${hex}` : "";
+}
+
+// Fixed window of the next SLOTS quarters. Each quarter takes the rate covering its start
+// (also works for an hourly tariff); a quarter without a rate yet (tomorrow before ~13:00)
+// gets value null. charging = any charge slot overlaps; frac = hours of it (from now on)
+// spent charging, for the battery projection and the session cost.
+function quarterly(rates, slots, now) {
   const nowMs = now.getTime();
-  const sums = new Map();
-  for (const r of rates) {
-    const s = new Date(r.start);
-    const key = new Date(s.getFullYear(), s.getMonth(), s.getDate(), s.getHours()).getTime();
-    const h = sums.get(key) || { sum: 0, n: 0 };
-    h.sum += r.value;
-    h.n += 1;
-    sums.set(key, h);
-  }
-  return Array.from({ length: AHEAD }, (_, i) => {
-    // Date() arithmetic on the hour field keeps DST changes right
-    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + i).getTime();
-    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + i + 1).getTime();
-    const s = sums.get(start);
+  const first = epochQuarter(nowMs) * QUARTER; // quarters are UTC-aligned, as are DST shifts
+  const spans = rates.map((r) => [new Date(r.start).getTime(), new Date(r.end).getTime(), r.value]);
+  return Array.from({ length: SLOTS }, (_, i) => {
+    const start = first + i * QUARTER, end = start + QUARTER;
+    const rate = spans.find(([a, b]) => a <= start && start < b);
     const from = Math.max(start, nowMs);
     const ms = slots.reduce((t, [a, b]) => t + Math.max(0, Math.min(b, end) - Math.max(a, from)), 0);
     return {
       start,
-      hour: epochHour(start),
-      value: s ? s.sum / s.n : null,
+      q: epochQuarter(start),
+      value: rate ? rate[2] : null,
       charging: slots.some(([a, b]) => a < end && b > start),
-      frac: Math.min(ms / HOUR, 1),
-      current: i === 0,
+      frac: ms / HOUR,
     };
   });
 }
 
-// "01:00–04:00, 13:00–14:00" from a set of epoch hours
-function ranges(hours) {
-  const sorted = [...hours].sort((a, b) => a - b);
+// "01:00–04:15, 13:30–14:00" from a set of epoch quarters
+function ranges(quarters) {
   const out = [];
-  for (const h of sorted) {
+  for (const q of [...quarters].sort((a, b) => a - b)) {
     const last = out[out.length - 1];
-    if (last && last[1] === h) last[1] = h + 1;
-    else out.push([h, h + 1]);
+    if (last && last[1] === q) last[1] = q + 1;
+    else out.push([q, q + 1]);
   }
-  return out.map(([a, b]) => `${hhmm(new Date(a * HOUR))}–${hhmm(new Date(b * HOUR))}`).join(", ");
+  return out.map(([a, b]) => `${hhmm(new Date(a * QUARTER))}–${hhmm(new Date(b * QUARTER))}`).join(", ");
 }
 
 class EvccPriceCard extends HTMLElement {
@@ -132,8 +142,17 @@ class EvccPriceCard extends HTMLElement {
         if (b) this._setMode(b.dataset.mode);
         if (e.target.closest("button[data-action=clear]")) this._saveHours(new Set());
       });
-      root.addEventListener("pointerdown", (e) => this._dragStart(e));
-      root.addEventListener("pointermove", (e) => this._dragMove(e));
+      root.addEventListener("pointerdown", (e) => {
+        this._hover(e);
+        this._dragStart(e);
+      });
+      root.addEventListener("pointermove", (e) => {
+        this._hover(e);
+        this._dragMove(e);
+      });
+      // mouse leaving the card hides the readout; touch keeps it after a tap, so it can
+      // be read without a finger on the screen
+      this.addEventListener("pointerleave", (e) => e.pointerType === "mouse" && this._hover(null));
       root.addEventListener("pointerup", () => this._dragEnd());
       root.addEventListener("pointercancel", () => this._dragEnd());
     }
@@ -191,7 +210,7 @@ class EvccPriceCard extends HTMLElement {
     // Re-render only when one of our entities changed.
     const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.power_entity, c.manual_entity, c.hours_entity]
       .map((e) => hass.states[e]?.last_updated)
-      .join("|") + new Date().getHours();
+      .join("|") + epochQuarter(Date.now());
     if (sig === this._sig) return;
     this._sig = sig;
     this._render();
@@ -220,12 +239,11 @@ class EvccPriceCard extends HTMLElement {
   _manualHours() {
     if (this._drag) return this._drag.sel;
     const value = this._hoursPending ? this._hoursPending.value : this._hass.states[this._config.hours_entity]?.state;
-    return parseHours(value);
+    return parseQuarters(value);
   }
 
   _saveHours(sel) {
-    const nowHour = epochHour(new Date(new Date().setMinutes(0, 0, 0)).getTime());
-    const value = [...sel].filter((h) => h >= nowHour).sort((a, b) => a - b).join(",");
+    const value = encodeQuarters(sel, epochQuarter(Date.now()));
     this._hoursPending = { value, until: Date.now() + 15000 };
     this._sig = null;
     this._render();
@@ -238,12 +256,39 @@ class EvccPriceCard extends HTMLElement {
       });
   }
 
+  // Readout for the quarter under the pointer: column highlight plus time and price,
+  // drawn in place (no re-render) so it tracks the pointer and works mid-drag.
+  _hover(e) {
+    const svg = this.shadowRoot.querySelector("svg.chart");
+    const tip = svg?.querySelector(".tip");
+    if (!tip) return;
+    const i = e && svg.contains(e.target) ? this._barAt(svg, e.clientX) : null;
+    if (i === this._hoverI) return;
+    svg.querySelector(".bar.hover")?.classList.remove("hover");
+    this._hoverI = i;
+    if (i === null) return tip.setAttribute("visibility", "hidden");
+    const g = this._geo, it = g.items[i];
+    svg.querySelector(`[data-i="${i}"]`)?.classList.add("hover");
+    const cx = g.left + (i + 0.5) * g.bw;
+    const charging = svg.querySelector(`[data-i="${i}"]`)?.classList.contains("charging");
+    const text = `${hhmm(new Date(it.start))}–${hhmm(new Date(it.start + QUARTER))}  ${it.value === null ? "not published yet" : `${eur(it.value)}/kWh`}${charging ? "  · charging" : ""}`;
+    const label = tip.querySelector("text");
+    label.textContent = text;
+    // anchor toward the middle so the label never runs off either edge
+    const right = cx > (g.left + g.plotR) / 2;
+    label.setAttribute("x", right ? Math.min(cx + 6, g.plotR) : Math.max(cx - 6, g.left));
+    label.setAttribute("text-anchor", right ? "end" : "start");
+    tip.querySelector("line").setAttribute("x1", cx);
+    tip.querySelector("line").setAttribute("x2", cx);
+    tip.setAttribute("visibility", "visible");
+  }
+
   // --- painting hours in Manual mode -------------------------------------------
   _barAt(svg, clientX) {
     const g = this._geo;
     if (!g) return null;
     const x = clientX - svg.getBoundingClientRect().left - g.left;
-    return Math.min(Math.max(Math.floor(x / g.bw), 0), g.hours.length - 1);
+    return Math.min(Math.max(Math.floor(x / g.bw), 0), g.keys.length - 1);
   }
 
   _dragStart(e) {
@@ -253,8 +298,8 @@ class EvccPriceCard extends HTMLElement {
     svg.setPointerCapture(e.pointerId);
     const i = this._barAt(svg, e.clientX);
     const sel = new Set(this._manualHours());
-    // starting on a painted hour erases, on an empty one paints
-    this._drag = { svg, sel, paint: !sel.has(this._geo.hours[i]), last: i };
+    // starting on a painted quarter erases, on an empty one paints
+    this._drag = { svg, sel, paint: !sel.has(this._geo.keys[i]), last: i };
     this._paint(i, i);
   }
 
@@ -276,22 +321,22 @@ class EvccPriceCard extends HTMLElement {
   _paint(from, to) {
     const { svg, sel, paint } = this._drag;
     for (let i = Math.min(from, to); i <= Math.max(from, to); i++) {
-      const h = this._geo.hours[i];
-      if (paint) sel.add(h);
-      else sel.delete(h);
+      const q = this._geo.keys[i];
+      if (paint) sel.add(q);
+      else sel.delete(q);
       svg.querySelector(`[data-i="${i}"]`)?.classList.toggle("charging", paint);
     }
   }
 
   // --- which hours charge, per mode --------------------------------------------
   _slots(st, now) {
-    // actually drawing power (e.g. evcc's 3-min wind-down after leaving Fast): this hour charges, whatever the mode says
+    // actually drawing power (e.g. evcc's 3-min wind-down after leaving Fast): this quarter charges, whatever the mode says
     const live = st.power > 0 ? [[now.getTime(), now.getTime() + 60e3]] : [];
     return [...live, ...this._modeSlots(st, now)];
   }
 
   _modeSlots(st, now) {
-    if (st.mode === "manual") return [...st.manual].map((h) => [h * HOUR, (h + 1) * HOUR]);
+    if (st.mode === "manual") return [...st.manual].map((q) => [q * QUARTER, (q + 1) * QUARTER]);
     if (st.mode === "smart") return (st.plan || []).map((p) => [new Date(p.start).getTime(), new Date(p.end).getTime()]);
     if (st.mode === "now" && st.soc < (st.limit || 100)) {
       const hours = st.remainingWh && st.maxPower ? st.remainingWh / st.maxPower : 1;
@@ -329,7 +374,7 @@ class EvccPriceCard extends HTMLElement {
   _chart(hours, editable, st) {
     const known = hours.filter((h) => h.value !== null);
     if (!known.length && !editable) return `<div class="empty">No price forecast yet</div>`;
-    // Two panels in one SVG so the hour columns line up exactly:
+    // Two panels in one SVG so the quarter columns line up exactly:
     //   battery %   socTop..socBot   (short)
     //   prices      pTop..H-bottom   (bars)
     // 40 = card padding; left gutter carries both axes' labels.
@@ -343,29 +388,30 @@ class EvccPriceCard extends HTMLElement {
     const bw = (plotR - left) / hours.length;
     const y = (v) => pTop + (H - pTop - bottom) * (1 - (v - min) / span);
     const ySoc = (p) => socBot - (socBot - socTop) * (p / 100);
-    this._geo = { left, bw, hours: hours.map((h) => h.hour) };
+    this._geo = { left, bw, plotR, keys: hours.map((h) => h.q), items: hours };
+    this._hoverI = null;
+    // gaps shrink with the bars: ~9 px bars on desktop, ~3 px on a phone
+    const gap = Math.min(1.5, bw * 0.25);
     const bars = hours
       .map((h, i) => {
-        const x = left + i * bw + 1.5, w = Math.max(bw - 3, 1);
+        const x = left + i * bw + gap / 2, w = Math.max(bw - gap, 0.5);
         const d = new Date(h.start);
-        const label = d.getHours() % 3 === 0
+        const label = d.getMinutes() === 0 && d.getHours() % 3 === 0
           ? `<text class="x" x="${x + w / 2}" y="${H - 6}">${d.getHours() === 0 ? d.toLocaleDateString(undefined, { weekday: "short" }) : pad(d.getHours())}</text>`
           : "";
-        const cls = ["bar", h.value === null && "unknown", h.charging && "charging", h.current && "current"].filter(Boolean).join(" ");
+        const cls = ["bar", h.value === null && "unknown", h.charging && "charging"].filter(Boolean).join(" ");
         // price not published yet: placeholder at the average height
         const v = h.value ?? avg;
         const y0 = y(Math.max(v, 0)), y1 = y(Math.min(v, 0));
-        const price = h.value === null ? "price not published yet" : `${eur(h.value)}/kWh`;
-        const tip = `<title>${hhmm(d)}  ${price}${h.charging ? "  · charging" : ""}</title>`;
-        // full-height hit area per hour (both panels), so short bars are as easy to paint as tall ones
+        // full-height hit area per quarter (both panels), so short bars are as easy to paint as tall ones
         const hit = editable ? `<rect class="hit" x="${left + i * bw}" y="${socTop - 6}" width="${bw}" height="${H - bottom - socTop + 6}"/>` : "";
-        return `${hit}<rect data-i="${i}" class="${cls}" x="${x}" y="${y0}" width="${w}" height="${Math.max(y1 - y0, 1)}" rx="2">${tip}</rect>${label}`;
+        return `${hit}<rect data-i="${i}" class="${cls}" x="${x}" y="${y0}" width="${w}" height="${Math.max(y1 - y0, 1)}" rx="${Math.min(2, w / 3)}"/>${label}`;
       })
       .join("");
     const firstUnknown = hours.findIndex((h) => h.value === null);
     const unknownNote = firstUnknown > 0
       ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">published ~13:00</text>` : "";
-    const nowX = left + (new Date().getMinutes() / 60) * bw;
+    const nowX = left + ((Date.now() % QUARTER) / QUARTER) * bw;
     // hairline grids: prices at max, half and zero (plus the minimum when negative); battery at 0/50/100%
     const ticks = [...new Set([max, max / 2, 0, min].map((v) => +v.toFixed(4)))];
     const grid = ticks
@@ -375,10 +421,14 @@ class EvccPriceCard extends HTMLElement {
       .map((p) => `<line class="${p === 0 ? "base" : "grid"}" x1="${left}" x2="${plotR}" y1="${ySoc(p)}" y2="${ySoc(p)}"/>${p === 50 ? "" : `<text class="y" x="${left - 8}" y="${ySoc(p) + 4}">${p}%</text>`}`)
       .join("");
     return `
-      <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Expected battery level and electricity prices for the next 24 hours"}">
+      <svg class="chart${editable ? " editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Expected battery level and electricity prices for the next 24 hours"}">
         ${socGrid}${grid}${bars}
         ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
         ${unknownNote}
+        <g class="tip" visibility="hidden">
+          <line y1="${pTop - 4}" y2="${H - bottom}"/>
+          <text y="${socBot + 22}"></text>
+        </g>
       </svg>`;
   }
 
@@ -458,8 +508,8 @@ class EvccPriceCard extends HTMLElement {
     if (!st.maxPower) st.maxPower = 11040;
     const now = new Date();
     const slots = this._slots(st, now);
-    const hours = hourly(rates, slots, now);
-    // Wh charged per hour at max power until the car reaches its limit; feeds the
+    const hours = quarterly(rates, slots, now);
+    // Wh charged per quarter at max power until the car reaches its limit; feeds the
     // battery line and the session price, so the two always agree
     let room = isNaN(soc) ? Infinity : Math.max((Math.max(st.limit, soc) - soc) * st.whPerPct, 0);
     for (const h of hours) {
@@ -488,7 +538,7 @@ class EvccPriceCard extends HTMLElement {
         svg.editable { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
         .hit { fill: transparent; }
         .bar { fill: var(--bar); transition: fill 120ms; }
-        .bar.unknown { fill: none; stroke: color-mix(in srgb, var(--muted) 45%, transparent); stroke-dasharray: 2 3; }
+        .bar.unknown { fill: color-mix(in srgb, var(--muted) 12%, transparent); }
         .bar.charging { fill: var(--accent); stroke: none; }
         .bar.unknown.charging { fill: color-mix(in srgb, var(--accent) 55%, transparent); }
         svg.editable .bar { pointer-events: none; }
@@ -506,12 +556,18 @@ class EvccPriceCard extends HTMLElement {
         .soc-target-label { font-size: 11px; fill: var(--accent); text-anchor: end; pointer-events: none; }
         .soc-now { font-size: 11px; font-weight: 500; fill: var(--ink); pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
+        .bar.hover { fill: color-mix(in srgb, var(--ink) 45%, transparent); }
+        .bar.charging.hover { fill: color-mix(in srgb, var(--accent) 80%, var(--ink)); }
+        .tip line { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 2 2; opacity: 0.5; }
+        .tip text { font-size: 12px; font-weight: 500; fill: var(--ink); pointer-events: none;
+                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
+        .tip { pointer-events: none; }
         .soc-end { font-size: 11px; font-weight: 500; fill: var(--ink); text-anchor: end; pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
         .legend i.line { height: 2px; width: 14px; border-radius: 1px; background: var(--ink); vertical-align: 3px; }
-        .legend i.dashed { box-sizing: border-box; border: 1px dashed color-mix(in srgb, var(--muted) 60%, transparent); }
+        .legend i.unknown { background: color-mix(in srgb, var(--muted) 12%, transparent); }
         .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 20px;
                  background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); padding: 4px; }
         .modes button { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: none; color: var(--ink); min-height: 44px; padding: 0 4px;
@@ -541,9 +597,9 @@ class EvccPriceCard extends HTMLElement {
         ${this._chart(hours, editable, st)}
         <div class="legend">
           ${LEGEND[st.mode] ? `<span><i style="background: var(--accent)"></i>${LEGEND[st.mode]}</span>` : ""}
-          <span><i style="background: var(--bar)"></i>Price per hour</span>
+          <span><i style="background: var(--bar)"></i>Price per 15 min</span>
           ${isNaN(soc) ? "" : `<span><i class="line"></i>Expected battery</span>`}
-          ${hasUnknown ? `<span><i class="dashed"></i>Not published yet</span>` : ""}
+          ${hasUnknown ? `<span><i class="unknown"></i>Not published yet</span>` : ""}
         </div>
         <div class="modes" role="group" aria-label="Charging mode">
           ${MODES.map(([m, label]) => {

@@ -105,8 +105,9 @@ template:
         press:
           - action: shell_command.evcc_empty_simulated_car
 
-# Manual mode: hours painted on the dashboard graph (www/evcc-price-card.js).
-# Stored as epoch hours (unix time // 3600), comma separated; 24 h fits in 255 chars.
+# Manual mode: quarter-hours painted on the dashboard graph (www/evcc-price-card.js).
+# Stored as "<base>:<hex>": base = epoch quarter (unix time // 900) of the first bit,
+# then one bit per quarter, most significant bit first per hex digit (max 32 chars).
 input_boolean:
   evcc_manual:
     name: evcc Manual schedule
@@ -121,13 +122,13 @@ automation:
   - id: evcc_manual_schedule
     alias: evcc manual schedule
     description: >-
-      While Manual is on, charge (evcc "now") only in the hours painted on the
-      dashboard graph and keep evcc off outside them. No hours set = off.
+      While Manual is on, charge (evcc "now") only in the quarter-hours painted on
+      the dashboard graph and keep evcc off outside them. Nothing painted = off.
     mode: queued
     max: 5
     triggers:
       - trigger: time_pattern
-        minutes: 0
+        minutes: /15
         seconds: 5
       - trigger: state
         entity_id:
@@ -141,9 +142,11 @@ automation:
         state: "on"
     actions:
       - variables:
-          hour: "{{ (now().timestamp() // 3600) | int }}"
-          hours: "{{ states('input_text.evcc_manual_hours').split(',') | select('match', '^[0-9]+$') | map('int') | list }}"
-          want: "{{ 'now' if hour in hours else 'off' }}"
+          want: >-
+            {% set s = states('input_text.evcc_manual_hours') %}
+            {% set bits = s.split(':')[1] if s is match('^[0-9]+:[0-9a-f]*$') else '' %}
+            {% set i = (now().timestamp() // 900) | int - (s.split(':')[0] | int(0)) %}
+            {% if 0 <= i < bits | length * 4 and ((bits[i // 4] | int(0, 16)) // 2 ** (3 - i % 4)) % 2 %}now{% else %}off{% endif %}
       - if: "{{ states('select.evcc_charge_mode') != want }}"
         then:
           - action: select.select_option
