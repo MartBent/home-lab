@@ -112,7 +112,9 @@ chargers:
       source: js
       vm: sim
       script: tick(); state.current = maxcurrent
-    # 1p/3p switching like a phase-switching wallbox; evcc only sends it while a car is connected
+    # 1p/3p switching like a phase-switching wallbox; evcc only sends it while a car is connected.
+    # tos: confirms the script doesn't pause charging around a switch itself (evcc does)
+    tos: true
     phases1p3p:
       source: js
       vm: sim
