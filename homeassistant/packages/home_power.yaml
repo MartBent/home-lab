@@ -1,0 +1,14 @@
+# 1-minute average of the P1's live power, for dashboard graphs. The P1 reports
+# every few seconds (~17k states/day); a 24 h sensor-card graph of the raw entity
+# fetches all of them and loads slowly over the tunnel. This one stores ~1.4k/day.
+sensor:
+  - platform: filter
+    name: Home power 1 min
+    unique_id: home_power_1min
+    entity_id: sensor.p1_meter_power
+    filters:
+      - filter: time_simple_moving_average
+        window_size: "00:01"
+        precision: 0
+      - filter: time_throttle
+        window_size: "00:01"

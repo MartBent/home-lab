@@ -39,7 +39,10 @@ Everything runs from a single compose project named `my-apps`.
 | `cloudflared` | cloudflare/cloudflared:latest | — (host net) | — |
 | `rfid-analyzer` | ghcr.io/martbent/rtl-sdr-uhf-rfid-analyzer:latest | 8080 → 80 | `sdr` |
 | `echo-server` | built from `docker/my-apps/echo-server/` | 8082 → 80 | `echo` |
+| `evcc` | evcc/evcc:latest | 7070 UI, 8887 OCPP (host net) | — (LAN only) |
 | `watchtower` | containrrr/watchtower | — | — |
+
+evcc (smart EV charging) is LAN-only on purpose: it controls a charger and its API is unauthenticated for mode changes, so it gets no tunnel route. Its config is `docker/my-apps/evcc/evcc.yaml`: the real HomeWizard P1 as grid meter, Zonneplan dynamic prices, and a simulated charger + 65 kWh car until a real charger is bought. Home Assistant reads it through `homeassistant/packages/evcc.yaml`.
 
 The echo server answers POST with a JSON dump of the request it received, and 405 on every other method. It's there for testing webhooks end to end through the tunnel.
 

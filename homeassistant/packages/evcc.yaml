@@ -1,0 +1,106 @@
+# evcc -> Home Assistant, straight off evcc's REST API (no HACS integration).
+# Feeds the Energy dashboard: Zonneplan all-in price for grid cost, EV charge total
+# as an individual device. Loadpoint index 0 = the first (currently simulated) charger.
+rest:
+  - resource: http://server.home:7070/api/state
+    scan_interval: 30
+    sensor:
+      - name: evcc Grid price
+        unique_id: evcc_grid_price
+        value_template: "{{ value_json.tariffGrid }}"
+        unit_of_measurement: EUR/kWh
+        state_class: measurement
+        icon: mdi:currency-eur
+
+      - name: evcc Charge total
+        unique_id: evcc_charge_total
+        # null until the first kWh is charged; unavailable beats a fake 0 in long-term stats
+        value_template: "{{ value_json.loadpoints[0].chargeTotalImport }}"
+        availability: "{{ value_json is defined and value_json.loadpoints[0].chargeTotalImport is number }}"
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+
+      - name: evcc Charge power
+        unique_id: evcc_charge_power
+        value_template: "{{ value_json.loadpoints[0].chargePower }}"
+        unit_of_measurement: W
+        device_class: power
+        state_class: measurement
+
+      - name: evcc Vehicle SoC
+        unique_id: evcc_vehicle_soc
+        value_template: "{{ value_json.loadpoints[0].vehicleSoc | round(1) }}"
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        json_attributes_path: "$.loadpoints[0]"
+        json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging]
+
+      - name: evcc Mode
+        unique_id: evcc_mode
+        value_template: "{{ value_json.loadpoints[0].mode }}"
+        icon: mdi:ev-station
+
+  # Price forecast (15-min slots, today + tomorrow after ~13:00) and evcc's chosen
+  # charging slots for the active plan. Both feed www/evcc-price-card.js.
+  - resource: http://server.home:7070/api/tariff/grid
+    scan_interval: 900
+    sensor:
+      - name: evcc Price forecast
+        unique_id: evcc_price_forecast
+        # state = when the known prices run out
+        value_template: "{{ (value_json.rates | last).end if value_json.rates else none }}"
+        device_class: timestamp
+        json_attributes: [rates]
+
+  - resource: http://server.home:7070/api/loadpoints/1/plan
+    scan_interval: 60
+    sensor:
+      - name: evcc Charge plan
+        unique_id: evcc_charge_plan
+        value_template: "{{ value_json.planTime if value_json.planId else none }}"
+        device_class: timestamp
+        json_attributes: [plan, duration, power]
+
+# The rate list is too big for the recorder's attribute limit and its history has no value.
+recorder:
+  exclude:
+    entities:
+      - sensor.evcc_price_forecast
+      - sensor.evcc_charge_plan
+
+# evcc's API is unauthenticated on the LAN for mode changes.
+rest_command:
+  evcc_set_mode:
+    url: "http://server.home:7070/api/loadpoints/1/mode/{{ mode }}"
+    method: post
+
+# Read by evcc's simulated car (mounted at /sim); a new token resets its SoC to 10%.
+# Remove together with the sim_* blocks in evcc.yaml once a real charger is in.
+shell_command:
+  evcc_empty_simulated_car: "mkdir -p /config/evcc-sim && date +%s > /config/evcc-sim/drain"
+
+template:
+  - select:
+      - name: evcc Charge mode
+        unique_id: evcc_charge_mode
+        icon: mdi:ev-station
+        state: "{{ states('sensor.evcc_mode') }}"
+        # take the chosen mode at once; waiting for the REST refresh hits its 10 s
+        # cooldown on a second tap. The 30 s poll keeps it honest.
+        optimistic: true
+        options: "{{ ['off', 'smart', 'now'] }}"
+        select_option:
+          - action: rest_command.evcc_set_mode
+            data:
+              mode: "{{ option }}"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.evcc_mode
+    button:
+      - name: evcc Empty simulated car
+        unique_id: evcc_empty_simulated_car
+        icon: mdi:car-arrow-left
+        press:
+          - action: shell_command.evcc_empty_simulated_car

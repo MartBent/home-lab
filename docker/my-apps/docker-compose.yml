@@ -32,6 +32,19 @@ services:
     volumes:
       - n8n_data:/home/node/.n8n
 
+  evcc:
+    image: evcc/evcc:latest
+    container_name: evcc
+    restart: unless-stopped
+    # host net per evcc docs: device discovery (mDNS/SMA) and OCPP on 8887 need the LAN. UI on :7070.
+    network_mode: host
+    environment:
+      - TZ=Europe/Amsterdam
+    volumes:
+      - ./evcc/evcc.yaml:/etc/evcc.yaml:ro
+      - ../../ha/evcc-sim:/sim:ro # drain token HA writes to empty the simulated car
+      - evcc_data:/root/.evcc # evcc.db: UI-made config, sessions, history
+
   echo-server:
     build: ./echo-server
     container_name: echo-server
@@ -65,3 +78,4 @@ services:
 
 volumes:
   n8n_data:
+  evcc_data:

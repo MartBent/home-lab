@@ -36,7 +36,7 @@
   # =====================================================================
   modes:
     # ---- LIGHT: beige wall + oak, ink controls ------------------------
-    light:
+    light: &mart_light
       primary-color: "#2B2823"           # sumi ink, technical controls
       dark-primary-color: "#1C1A16"
       light-primary-color: "#4A463E"
@@ -46,7 +46,6 @@
       secondary-background-color: "#EDE6D9"
       card-background-color: "#F4EFE6"    # warm off-white
       ha-card-background: "#F4EFE6"
-      lovelace-background: "#E5DCCB"
       divider-color: "#CFC5B2"            # hairline
       ha-card-border-color: "#CFC5B2"
 
@@ -120,7 +119,7 @@
       rgb-card-background-color: "244, 239, 230"
 
     # ---- DARK: warm charcoal + oak, stone controls --------------------
-    dark:
+    dark: &mart_dark
       primary-color: "#D8CDB8"           # warm stone, technical controls (inverted)
       dark-primary-color: "#B3A88F"
       light-primary-color: "#E8E0D2"
@@ -130,7 +129,6 @@
       secondary-background-color: "#242019"
       card-background-color: "#26221D"
       ha-card-background: "#26221D"
-      lovelace-background: "#1B1815"
       divider-color: "#3A352E"
       ha-card-border-color: "#3A352E"
 
@@ -201,3 +199,24 @@
       rgb-accent-color: "192, 138, 84"
       rgb-primary-text-color: "232, 224, 210"
       rgb-card-background-color: "38, 34, 29"
+
+# ---------------------------------------------------------------------------
+# "Mart's Theme Soft": same palette, softer shape. Used per view by the Home
+# dashboard (dashboards/home.yaml, `theme:`), so the rest of HA keeps the
+# technical 4px look. Rounder cards, no border, a faint shadow, and a gradient
+# from the beige wall into oak (light) or charcoal into oak (dark).
+# ---------------------------------------------------------------------------
+"Mart's Theme Soft":
+  ha-card-border-radius: "20px"
+  ha-card-border-width: "0px"
+  label-badge-border-radius: "20px"
+  ha-badge-border-radius: "20px"
+  modes:
+    light:
+      <<: *mart_light
+      ha-card-box-shadow: "0 1px 2px rgba(43, 40, 35, 0.05), 0 8px 24px rgba(43, 40, 35, 0.06)"
+      lovelace-background: "linear-gradient(160deg, #F1EBE0 0%, #E5DCCB 55%, #D8C4A6 100%) fixed"
+    dark:
+      <<: *mart_dark
+      ha-card-box-shadow: "0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25)"
+      lovelace-background: "linear-gradient(160deg, #26221D 0%, #1B1815 55%, #2E241A 100%) fixed"

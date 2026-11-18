@@ -13,6 +13,14 @@ The live HA config directory, `ha/`, is gitignored, so runtime config isn't trac
 | `dashboards/alarms.yaml` | `dashboards/alarms.yaml` | The older stock-card alarms dashboard (YAML mode, `sections`). Superseded by the panel, kept as a no-JS fallback. |
 | `dashboards/alarms-card.yaml` | not deployed | Paste-in card variant of the stock-card view, for adding to an existing dashboard. |
 | `automations/nightly-alarm-reminder.yaml` | append to `automations.yaml` | Optional 21:00 "set an alarm?" actionable notification and its button handler. |
+| `dashboards/home.yaml` | `dashboards/home.yaml` | The Home dashboard (sections view, greeting header, weather, alarm clock, plugs, EV charging, living room, NAS). Registered under `lovelace: dashboards: dashboard-home` (YAML mode). Uses the "Mart's Theme Soft" view theme. Set as Mart's default page (`core.default_panel: dashboard-home` in `.storage/frontend.user_data_<user id>`, written with HA stopped; Profile → Dashboard changes it back). |
+| `www/evcc-price-card.js` | `www/evcc-price-card.js` | `custom:evcc-price-card`: hourly prices with evcc's planned charging hours in oak, plus Off / Smart / Fast. Loaded via `frontend: extra_module_url: [/local/evcc-price-card.js?v=8]`; bump `v` after each change. |
+| `packages/home_power.yaml` | `packages/home_power.yaml` | `sensor.home_power_1_min`: 1-minute average of the P1 power for the dashboard graph. The raw P1 entity reports every few seconds, and its 24 h graph loaded slowly through the tunnel. |
+| `packages/evcc.yaml` | `packages/evcc.yaml` | evcc sensors (Zonneplan price, EV charge total/power, SoC), a charge-mode select, and the "empty simulated car" button. Needs `homeassistant: packages: !include_dir_named packages` in `configuration.yaml`. |
+
+## Energy dashboard
+
+Configured once, by writing `.storage/energy` with HA stopped (HA 2026.3 schema, `minor_version: 3`); edit it in the UI from then on. Grid: `sensor.p1_meter_energy_import` / `_export`, both priced with `sensor.evcc_grid_price` (all-in Zonneplan price; same price for export while net metering lasts, which ends 2027-01-01). Individual device: `sensor.evcc_charge_total`. No solar source: there is no PV meter, only the P1's net export.
 
 The alarm entities come from the `smart_alarm_clock` custom integration, which lives in its own repo (`MartBent/smart-alarm-clock`, under `homeassistant/custom_components/`). It's the device driver and is versioned with the firmware, not here.
 

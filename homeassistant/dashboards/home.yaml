@@ -1,0 +1,209 @@
+# Home dashboard: greeting header, weather, alarm clock, plugs, EV charging with
+# prices, living room and NAS. Sections view, stock cards plus the bespoke
+# custom:evcc-price-card (www/evcc-price-card.js). Rendered in "Mart's Theme Soft"
+# (themes/mart.yaml): the household palette with rounder, borderless cards.
+#
+# Registered in configuration.yaml under lovelace: dashboards: dashboard-home.
+# Plug note: the Synology NAS and Cloud Gateway sockets are shown read-only on
+# purpose; a stray tap would cut power to the NAS or the network.
+
+title: Home
+views:
+  - title: Home
+    path: home
+    icon: mdi:home-outline
+    type: sections
+    max_columns: 3
+    theme: "Mart's Theme Soft"
+    header:
+      layout: center
+      badges_position: bottom
+      card:
+        type: markdown
+        text_only: true
+        content: >-
+          {% set h = now().hour %}
+          {% set conditions = {'clear-night': 'clear', 'cloudy': 'cloudy', 'fog': 'foggy',
+             'hail': 'hailing', 'lightning': 'stormy', 'lightning-rainy': 'stormy',
+             'partlycloudy': 'partly cloudy', 'pouring': 'pouring', 'rainy': 'rainy',
+             'snowy': 'snowing', 'snowy-rainy': 'sleeting', 'sunny': 'sunny',
+             'windy': 'windy', 'windy-variant': 'windy', 'exceptional': 'unusual'} %}
+          {% set w = states('weather.forecast_home') %}
+          # {{ 'Good morning' if h < 12 else 'Good afternoon' if h < 18 else 'Good evening' }}, {{ user.split(' ')[0] }}
+
+          Today is {{ now().strftime('%A %-d %B') }}. It's {{ conditions.get(w, w) }} outside,
+          currently **{{ state_attr('weather.forecast_home', 'temperature') }} °C**.
+    badges:
+      - type: entity
+        entity: person.mart_bent
+        show_entity_picture: true
+        show_name: false
+      - type: entity
+        entity: sensor.smart_alarm_clock_time
+        name: Alarm
+        icon: mdi:alarm
+        show_name: true
+        tap_action:
+          action: navigate
+          navigation_path: /alarms
+      - type: entity
+        entity: sensor.evcc_vehicle_soc
+        name: Car
+        icon: mdi:car-electric
+        show_name: true
+      - type: entity
+        entity: sensor.evcc_grid_price
+        name: Price
+        show_name: true
+      - type: entity
+        entity: sensor.p1_meter_power
+        name: Home
+        icon: mdi:home-lightning-bolt-outline
+        show_name: true
+
+    # Columns are balanced by height on purpose: sections line up in rows on desktop,
+    # so a short column next to a tall one leaves a hole.
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Weather
+            icon: mdi:weather-partly-cloudy
+          - type: weather-forecast
+            entity: weather.forecast_home
+            name: Outside
+            show_current: true
+            show_forecast: true
+            forecast_type: hourly
+          - type: weather-forecast
+            entity: weather.forecast_home
+            show_current: false
+            show_forecast: true
+            forecast_type: daily
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Alarm clock
+            icon: mdi:alarm
+            tap_action:
+              action: navigate
+              navigation_path: /alarms
+          - type: tile
+            entity: sensor.smart_alarm_clock_time
+            name: Next alarm
+            icon: mdi:alarm
+            tap_action:
+              action: navigate
+              navigation_path: /alarms
+          - type: tile
+            entity: sensor.smart_alarm_clock_phase
+            name: Phase
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: switch.smart_alarm_clock_display
+            name: Display
+            grid_options:
+              columns: 6
+          - type: heading
+            heading: Living room
+            icon: mdi:sofa-outline
+          # tile instead of media-control: that card paints its own black/grey slab
+          # and ignores the theme. Controls only while the speaker is reachable;
+          # unavailable, HA draws them as an empty grey block.
+          - type: tile
+            entity: media_player.woonkamer
+            name: Woonkamer
+            features_position: bottom
+            features:
+              - type: media-player-playback
+              - type: media-player-volume-slider
+            visibility:
+              - condition: state
+                entity: media_player.woonkamer
+                state_not: unavailable
+          - type: tile
+            entity: media_player.woonkamer
+            name: Woonkamer
+            visibility:
+              - condition: state
+                entity: media_player.woonkamer
+                state: unavailable
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: Plugs
+            icon: mdi:power-socket-eu
+          - type: tile
+            entity: switch.energy_socket_2
+            name: Desk lamp
+            icon: mdi:desk-lamp
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.energy_socket_power
+            name: Synology NAS
+            icon: mdi:nas
+            tap_action:
+              action: more-info
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.energy_socket_power_3
+            name: Cloud Gateway
+            icon: mdi:router-network
+            tap_action:
+              action: more-info
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.gas_meter_gas_2 # gas_meter_gas (no _2) is a dead duplicate
+            name: Gas
+            icon: mdi:fire
+            grid_options:
+              columns: 6
+          - type: heading
+            heading: Energy
+            icon: mdi:lightning-bolt-outline
+          - type: sensor
+            entity: sensor.home_power_1_min # 1-min average: the raw P1 graph loads ~17k points
+            name: Home power
+            graph: line
+            hours_to_show: 24
+            detail: 2
+            grid_options:
+              columns: full
+
+      - type: grid
+        column_span: 2
+        cards:
+          - type: heading
+            heading: EV charging
+            icon: mdi:ev-station
+          # Wrapped in a stock stack on purpose: sections give a top-level custom card
+          # only 2 s to get defined, then show "Configuration error" for good; a stack
+          # rebuilds the card whenever its JS arrives.
+          - type: vertical-stack
+            grid_options:
+              columns: full
+            cards:
+              - type: custom:evcc-price-card
+                title: Simulated EV
+
+      - type: grid
+        cards:
+          - type: heading
+            heading: NAS
+            icon: mdi:nas
+          - type: sensor
+            entity: sensor.homelab_temperature
+            name: Temperature
+            graph: line
+            hours_to_show: 24
+          - type: sensor
+            entity: sensor.homelab_volume_1_volume_used
+            name: Volume used
+            graph: line
+            hours_to_show: 168

@@ -1,0 +1,117 @@
+# evcc config, mounted read-only at /etc/evcc.yaml. Devices defined here show as
+# read-only in the UI; anything added in the UI lands in evcc.db instead.
+#
+# Real:      HomeWizard P1 (grid), Zonneplan dynamic tariff.
+# Simulated: charger + car, until a real charger is bought. Replace the `sim_*`
+#            blocks with the charger's template (docs.evcc.io/en/chargers) then.
+
+interval: 30s
+
+site:
+  title: Home
+  meters:
+    grid: p1
+
+meters:
+  # HomeWizard P1, same IP as HA's HomeWizard entry; give it a DHCP reservation.
+  # Grid power = real P1 + the simulated charger, else evcc reads sim charging as
+  # solar surplus and never stops. With a real charger, swap back to:
+  #   type: template / template: homewizard / usage: grid / host: 192.168.1.185
+  - name: p1
+    type: custom
+    power:
+      source: js
+      vm: sim
+      script: tick(); p1 + state.power
+      in:
+        - name: p1
+          type: float
+          config:
+            source: http
+            uri: http://192.168.1.185/api/v1/data
+            jq: .active_power_w
+    energy:
+      source: http
+      uri: http://192.168.1.185/api/v1/data
+      jq: .total_power_import_kwh
+
+  - name: sim_charge_meter
+    type: custom
+    power:
+      source: js
+      vm: sim
+      script: tick(); state.power
+    energy:
+      source: js
+      vm: sim
+      script: tick(); state.kwh
+
+tariffs:
+  currency: EUR
+  grid:
+    type: template
+    template: epexprijzen-nl
+    provider: zonneplan # all-in: EPEX + Zonneplan markup + energy tax + VAT
+
+# Simulated 3-phase 11 kW charger with a 65 kWh car permanently plugged in.
+# Charging stops by itself at 100%. Start/stop: evcc mode Fast/Off (or HA's
+# select.evcc_charge_mode). "Empty the car": HA's button.evcc_empty_simulated_car
+# writes a new token to /sim/drain; a changed token resets SoC to 10%.
+# State is in-memory: an evcc restart starts the car at 10% again.
+javascript:
+  - vm: sim
+    script: |
+      state = { enabled: false, current: 6, power: 0, kwh: 0, soc: 10, last: Date.now(), drain: null };
+      function tick(drain) {
+        var now = Date.now();
+        if (drain !== undefined && state.drain !== null && drain !== state.drain) state.soc = 10;
+        if (drain !== undefined) state.drain = drain;
+        state.power = state.enabled && state.soc < 100 ? state.current * 230 * 3 : 0;
+        var kwh = state.power * (now - state.last) / 3.6e9;
+        state.kwh += kwh;
+        state.soc = Math.min(state.soc + kwh / 65 * 100, 100);
+        state.last = now;
+      }
+
+chargers:
+  - name: sim_charger
+    type: custom
+    status:
+      source: js
+      vm: sim
+      script: 'tick(); state.power > 0 ? "C" : "B"'
+    enabled:
+      source: js
+      vm: sim
+      script: state.enabled
+    enable:
+      source: js
+      vm: sim
+      script: tick(); state.enabled = enable
+    maxcurrent:
+      source: js
+      vm: sim
+      script: tick(); state.current = maxcurrent
+
+vehicles:
+  - name: sim_car
+    type: custom
+    title: Simulated EV
+    capacity: 65
+    soc:
+      source: js
+      vm: sim
+      script: tick(drain); state.soc
+      in:
+        - name: drain
+          type: string
+          config:
+            source: script
+            cmd: cat /sim/drain
+
+loadpoints:
+  - title: Driveway (simulated)
+    charger: sim_charger
+    meter: sim_charge_meter
+    vehicle: sim_car
+    mode: pv
