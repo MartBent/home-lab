@@ -17,10 +17,10 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=14]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=15]
  */
 
-const VERSION = 14;
+const VERSION = 15;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -477,7 +477,6 @@ class EvccPriceCard extends HTMLElement {
         svg.editable { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
         .hit { fill: transparent; }
         .bar { fill: var(--bar); transition: fill 120ms; }
-        .bar.current { fill: color-mix(in srgb, var(--ink) 55%, transparent); }
         .bar.unknown { fill: none; stroke: color-mix(in srgb, var(--muted) 45%, transparent); stroke-dasharray: 2 3; }
         .bar.charging { fill: var(--accent); stroke: none; }
         .bar.unknown.charging { fill: color-mix(in srgb, var(--accent) 55%, transparent); }
