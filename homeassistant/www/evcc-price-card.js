@@ -17,10 +17,10 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=17]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=18]
  */
 
-const VERSION = 17;
+const VERSION = 18;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -377,7 +377,6 @@ class EvccPriceCard extends HTMLElement {
     return `
       <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Expected battery level and electricity prices for the next 24 hours"}">
         ${socGrid}${grid}${bars}
-        <line class="now" x1="${nowX}" x2="${nowX}" y1="${socTop - 6}" y2="${H - bottom}"/>
         ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
         ${unknownNote}
       </svg>`;
@@ -509,7 +508,6 @@ class EvccPriceCard extends HTMLElement {
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .soc-end { font-size: 11px; font-weight: 500; fill: var(--ink); text-anchor: end; pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
-        .now { stroke: var(--ink); stroke-width: 1; pointer-events: none; }
         .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
         .legend i.line { height: 2px; width: 14px; border-radius: 1px; background: var(--ink); vertical-align: 3px; }
