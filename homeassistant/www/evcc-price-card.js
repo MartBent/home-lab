@@ -17,10 +17,10 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=12]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=14]
  */
 
-const VERSION = 12;
+const VERSION = 14;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -329,16 +329,20 @@ class EvccPriceCard extends HTMLElement {
   _chart(hours, editable, st) {
     const known = hours.filter((h) => h.value !== null);
     if (!known.length && !editable) return `<div class="empty">No price forecast yet</div>`;
-    // left gutter: price axis; right gutter: battery % axis. 40 = card padding
-    const W = Math.max((this._w || 720) - 40, 240), H = 172, top = 16, bottom = 22, left = 40, right = 34;
+    // Two panels in one SVG so the hour columns line up exactly:
+    //   battery %   socTop..socBot   (short)
+    //   prices      pTop..H-bottom   (bars)
+    // 40 = card padding; left gutter carries both axes' labels.
+    const W = Math.max((this._w || 720) - 40, 240), left = 40, right = 6, bottom = 22;
+    const socTop = 10, socBot = 62, pTop = socBot + 36, H = pTop + 134 + bottom;
     const plotR = W - right;
     const vals = known.length ? known.map((h) => h.value) : [0.3];
     const max = Math.max(...vals), min = Math.min(0, ...vals);
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
     const span = max - min || 1;
     const bw = (plotR - left) / hours.length;
-    const y = (v) => top + (H - top - bottom) * (1 - (v - min) / span);
-    const ySoc = (p) => H - bottom - (H - bottom - top) * (p / 100);
+    const y = (v) => pTop + (H - pTop - bottom) * (1 - (v - min) / span);
+    const ySoc = (p) => socBot - (socBot - socTop) * (p / 100);
     this._geo = { left, bw, hours: hours.map((h) => h.hour) };
     const bars = hours
       .map((h, i) => {
@@ -353,8 +357,8 @@ class EvccPriceCard extends HTMLElement {
         const y0 = y(Math.max(v, 0)), y1 = y(Math.min(v, 0));
         const price = h.value === null ? "price not published yet" : `${eur(h.value)}/kWh`;
         const tip = `<title>${hhmm(d)}  ${price}${h.charging ? "  · charging" : ""}</title>`;
-        // full-height hit area per hour, so short bars are as easy to paint as tall ones
-        const hit = editable ? `<rect class="hit" x="${left + i * bw}" y="${top - 8}" width="${bw}" height="${H - bottom - top + 8}"/>` : "";
+        // full-height hit area per hour (both panels), so short bars are as easy to paint as tall ones
+        const hit = editable ? `<rect class="hit" x="${left + i * bw}" y="${socTop - 6}" width="${bw}" height="${H - bottom - socTop + 6}"/>` : "";
         return `${hit}<rect data-i="${i}" class="${cls}" x="${x}" y="${y0}" width="${w}" height="${Math.max(y1 - y0, 1)}" rx="2">${tip}</rect>${label}`;
       })
       .join("");
@@ -362,7 +366,7 @@ class EvccPriceCard extends HTMLElement {
     if (known.length) {
       const cheapest = known.reduce((a, b) => (b.value < a.value ? b : a));
       const ci = hours.indexOf(cheapest);
-      const cheapX = Math.min(Math.max(left + ci * bw + bw / 2, left + 22), plotR - 22); // keep the label off the axes
+      const cheapX = Math.min(Math.max(left + ci * bw + bw / 2, left + 22), plotR - 22); // keep the label off the axis
       // halo (paint-order stroke in the card colour) keeps it legible over bars and lines
       cheapMark = `<text class="cheap" x="${cheapX}" y="${y(cheapest.value) - 6}">${eur(cheapest.value)}</text>`;
     }
@@ -370,37 +374,49 @@ class EvccPriceCard extends HTMLElement {
     const unknownNote = firstUnknown > 0
       ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">published ~13:00</text>` : "";
     const nowX = left + (new Date().getMinutes() / 60) * bw;
-    // hairline grid at max, half and zero (plus the minimum when prices go negative)
+    // hairline grids: prices at max, half and zero (plus the minimum when negative); battery at 0/50/100%
     const ticks = [...new Set([max, max / 2, 0, min].map((v) => +v.toFixed(4)))];
     const grid = ticks
       .map((v) => `<line class="${v === 0 ? "base" : "grid"}" x1="${left}" x2="${plotR}" y1="${y(v)}" y2="${y(v)}"/><text class="y" x="${left - 8}" y="${y(v) + 4}">${eur(v, 2)}</text>`)
       .join("");
-    const socAxis = [0, 50, 100].map((p) => `<text class="y2" x="${plotR + 6}" y="${ySoc(p) + 4}">${p}%</text>`).join("");
+    const socGrid = [100, 50, 0]
+      .map((p) => `<line class="${p === 0 ? "base" : "grid"}" x1="${left}" x2="${plotR}" y1="${ySoc(p)}" y2="${ySoc(p)}"/>${p === 50 ? "" : `<text class="y" x="${left - 8}" y="${ySoc(p) + 4}">${p}%</text>`}`)
+      .join("");
     return `
-      <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Electricity prices and expected battery level for the next 24 hours"}">
-        ${grid}${socAxis}${bars}
-        <line class="now" x1="${nowX}" x2="${nowX}" y1="${top - 8}" y2="${H - bottom}"/>
-        ${this._socLine(hours, st, nowX, left, bw, ySoc, plotR)}
+      <svg class="${editable ? "editable" : ""}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${editable ? "Drag across the hours the car should charge" : "Expected battery level and electricity prices for the next 24 hours"}">
+        ${socGrid}${grid}${bars}
+        <line class="now" x1="${nowX}" x2="${nowX}" y1="${socTop - 6}" y2="${H - bottom}"/>
+        ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
         ${cheapMark}${unknownNote}
       </svg>`;
   }
 
   // Expected battery %: starts at the car's SoC now and rises through each charging
   // hour at the max charge power, using evcc's own Wh-per-percent (losses included).
-  _socLine(hours, st, nowX, left, bw, ySoc, plotR) {
+  _socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR) {
     if (isNaN(st.soc)) return "";
-    const cap = st.limit || 100;
+    const cap = Math.max(st.limit || 100, st.soc);
     let soc = Math.min(st.soc, 100);
     const pts = [[nowX, soc]];
     hours.forEach((h, i) => {
-      soc = Math.min(soc + (h.frac * st.maxPower) / st.whPerPct, Math.max(cap, st.soc));
+      soc = Math.min(soc + (h.frac * st.maxPower) / st.whPerPct, cap);
       pts.push([left + (i + 1) * bw, soc]);
     });
-    const d = pts.map(([x, p], i) => `${i ? "L" : "M"}${x.toFixed(1)},${ySoc(p).toFixed(1)}`).join("");
-    const [lx, lp] = pts[pts.length - 1];
-    // end label sits just above the line, inside the plot
-    return `<path class="soc-line" d="${d}"/><circle class="soc-dot" cx="${nowX}" cy="${ySoc(pts[0][1])}" r="3"/>
-      <text class="soc-end" x="${Math.min(lx, plotR) - 2}" y="${ySoc(lp) - 6}">${Math.round(lp)}%</text>`;
+    const line = pts.map(([x, p], i) => `${i ? "L" : "M"}${x.toFixed(1)},${ySoc(p).toFixed(1)}`).join("");
+    const area = `${line}L${pts[pts.length - 1][0].toFixed(1)},${socBot}L${nowX.toFixed(1)},${socBot}Z`;
+    const [sx, sp] = pts[0], [ex, ep] = pts[pts.length - 1];
+    // target of Smart's plan as a dashed oak line
+    const target = st.mode === "smart" && st.planSoc
+      ? `<line class="soc-target" x1="${left}" x2="${plotR}" y1="${ySoc(st.planSoc)}" y2="${ySoc(st.planSoc)}"/>
+         <text class="soc-target-label" x="${plotR - 2}" y="${ySoc(st.planSoc) - 4}">target ${st.planSoc}%</text>`
+      : "";
+    // start label sits above the dot; the end label only when the line actually moved
+    // above the line, except near the top where it would sit on the 100% grid line
+    const labelY = (p) => (p > 85 ? ySoc(p) + 13 : ySoc(p) - 6);
+    const startLabel = `<text class="soc-now" x="${sx + 6}" y="${labelY(sp)}">${Math.round(sp)}%</text>`;
+    const endLabel = ep - sp >= 3 ? `<text class="soc-end" x="${Math.min(ex, plotR) - 2}" y="${labelY(ep)}">${Math.round(ep)}%</text>` : "";
+    return `<path class="soc-area" d="${area}"/>${target}<path class="soc-line" d="${line}"/>
+      <circle class="soc-dot" cx="${sx}" cy="${ySoc(sp)}" r="3"/>${startLabel}${endLabel}`;
   }
 
   // A render failure shows inside the card (and in HA's log) instead of taking it down.
@@ -457,10 +473,7 @@ class EvccPriceCard extends HTMLElement {
         .now-price { text-align: right; flex: none; }
         .now-price b { font-size: 26px; font-weight: 400; color: var(--ink); line-height: 1.1; letter-spacing: -0.01em; }
         .now-price span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
-        .soc { height: 4px; border-radius: 2px; background: var(--divider-color); margin: 18px 0 6px; overflow: hidden; }
-        .soc i { display: block; height: 100%; width: ${Math.min(soc || 0, 100)}%; background: var(--accent); }
-        .soc-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
-        svg { width: 100%; height: auto; display: block; margin-top: 20px; overflow: visible; }
+        svg { width: 100%; height: auto; display: block; margin-top: 18px; overflow: visible; }
         svg.editable { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
         .hit { fill: transparent; }
         .bar { fill: var(--bar); transition: fill 120ms; }
@@ -476,9 +489,13 @@ class EvccPriceCard extends HTMLElement {
         .note { paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .x, .cheap, .note { text-anchor: middle; }
         .y { text-anchor: end; }
-        .y2 { font-size: 11px; fill: var(--muted); pointer-events: none; }
         .soc-line { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round; pointer-events: none; }
         .soc-dot { fill: var(--ink); pointer-events: none; }
+        .soc-area { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: none; pointer-events: none; }
+        .soc-target { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
+        .soc-target-label { font-size: 11px; fill: var(--accent); text-anchor: end; pointer-events: none; }
+        .soc-now { font-size: 11px; font-weight: 500; fill: var(--ink); pointer-events: none;
+                   paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .soc-end { font-size: 11px; font-weight: 500; fill: var(--ink); text-anchor: end; pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .cheap { fill: var(--ink); font-weight: 500; paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
@@ -513,13 +530,11 @@ class EvccPriceCard extends HTMLElement {
           </div>
           <div class="now-price"><b>${curRate ? eur(curRate.value) : "–"}</b><span>per kWh now</span></div>
         </div>
-        <div class="soc" role="progressbar" aria-label="Battery" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${isNaN(soc) ? 0 : Math.round(soc)}"><i></i></div>
-        <div class="soc-label"><span>Battery ${isNaN(soc) ? "–" : soc.toFixed(0)}%</span><span>${st.planSoc && st.mode === "smart" ? `target ${st.planSoc}%` : ""}</span></div>
         ${this._chart(hours, editable, st)}
         <div class="legend">
           ${LEGEND[st.mode] ? `<span><i style="background: var(--accent)"></i>${LEGEND[st.mode]}</span>` : ""}
           <span><i style="background: var(--bar)"></i>Price per hour</span>
-          ${isNaN(soc) ? "" : `<span><i class="line"></i>Battery</span>`}
+          ${isNaN(soc) ? "" : `<span><i class="line"></i>Expected battery</span>`}
           ${hasUnknown ? `<span><i class="dashed"></i>Not published yet</span>` : ""}
         </div>
         <div class="modes" role="group" aria-label="Charging mode">
