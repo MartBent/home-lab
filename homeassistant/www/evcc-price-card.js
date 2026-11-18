@@ -1,6 +1,6 @@
 /*
  * evcc price card: the next 24 h of grid prices with the hours the car will charge,
- * plus Off / Smart / Manual / Fast.
+ * the cost of those hours, plus Smart / Manual / Fast.
  *   Smart   evcc's plan picks the hours (oak bars)
  *   Manual  drag across the bars to paint the hours yourself; Clear = stay off.
  *           An HA automation (packages/evcc.yaml) runs evcc "now" inside them, "off" outside.
@@ -17,10 +17,10 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=15]
+ *   frontend: extra_module_url: [/local/evcc-price-card.js?v=17]
  */
 
-const VERSION = 15;
+const VERSION = 17;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -362,14 +362,6 @@ class EvccPriceCard extends HTMLElement {
         return `${hit}<rect data-i="${i}" class="${cls}" x="${x}" y="${y0}" width="${w}" height="${Math.max(y1 - y0, 1)}" rx="2">${tip}</rect>${label}`;
       })
       .join("");
-    let cheapMark = "";
-    if (known.length) {
-      const cheapest = known.reduce((a, b) => (b.value < a.value ? b : a));
-      const ci = hours.indexOf(cheapest);
-      const cheapX = Math.min(Math.max(left + ci * bw + bw / 2, left + 22), plotR - 22); // keep the label off the axis
-      // halo (paint-order stroke in the card colour) keeps it legible over bars and lines
-      cheapMark = `<text class="cheap" x="${cheapX}" y="${y(cheapest.value) - 6}">${eur(cheapest.value)}</text>`;
-    }
     const firstUnknown = hours.findIndex((h) => h.value === null);
     const unknownNote = firstUnknown > 0
       ? `<text class="note" x="${left + ((firstUnknown + hours.length) / 2) * bw}" y="${(y(avg) + y(0)) / 2 + 4}">published ~13:00</text>` : "";
@@ -387,7 +379,7 @@ class EvccPriceCard extends HTMLElement {
         ${socGrid}${grid}${bars}
         <line class="now" x1="${nowX}" x2="${nowX}" y1="${socTop - 6}" y2="${H - bottom}"/>
         ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
-        ${cheapMark}${unknownNote}
+        ${unknownNote}
       </svg>`;
   }
 
@@ -395,11 +387,10 @@ class EvccPriceCard extends HTMLElement {
   // hour at the max charge power, using evcc's own Wh-per-percent (losses included).
   _socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR) {
     if (isNaN(st.soc)) return "";
-    const cap = Math.max(st.limit || 100, st.soc);
     let soc = Math.min(st.soc, 100);
     const pts = [[nowX, soc]];
     hours.forEach((h, i) => {
-      soc = Math.min(soc + (h.frac * st.maxPower) / st.whPerPct, cap);
+      soc += h.wh / st.whPerPct;
       pts.push([left + (i + 1) * bw, soc]);
     });
     const line = pts.map(([x, p], i) => `${i ? "L" : "M"}${x.toFixed(1)},${ySoc(p).toFixed(1)}`).join("");
@@ -417,6 +408,21 @@ class EvccPriceCard extends HTMLElement {
     const endLabel = ep - sp >= 3 ? `<text class="soc-end" x="${Math.min(ex, plotR) - 2}" y="${labelY(ep)}">${Math.round(ep)}%</text>` : "";
     return `<path class="soc-area" d="${area}"/>${target}<path class="soc-line" d="${line}"/>
       <circle class="soc-dot" cx="${sx}" cy="${ySoc(sp)}" r="3"/>${startLabel}${endLabel}`;
+  }
+
+  // Cost of the charging hours selected in the graph (plan, painted hours or Fast's
+  // run to full) at the hourly prices; hours without a published price are left out.
+  _session(hours) {
+    const charged = hours.filter((h) => h.wh > 0);
+    const kwh = charged.reduce((t, h) => t + h.wh, 0) / 1000;
+    if (kwh < 0.05) return "";
+    const priced = charged.filter((h) => h.value !== null);
+    const pkwh = priced.reduce((t, h) => t + h.wh, 0) / 1000;
+    const cost = priced.reduce((t, h) => t + (h.wh / 1000) * h.value, 0);
+    const sub = priced.length < charged.length
+      ? `${kwh.toFixed(1)} kWh, ${pkwh ? `${pkwh.toFixed(1)} priced so far` : "prices not published yet"}`
+      : `${kwh.toFixed(1)} kWh at ${eur(cost / kwh)}/kWh`;
+    return `<div class="session" title="Cost of the charging hours in the graph"><b>${pkwh ? eur(cost, 2) : "–"}</b><span>${sub}</span></div>`;
   }
 
   // A render failure shows inside the card (and in HA's log) instead of taking it down.
@@ -454,9 +460,15 @@ class EvccPriceCard extends HTMLElement {
     const now = new Date();
     const slots = this._slots(st, now);
     const hours = hourly(rates, slots, now);
+    // Wh charged per hour at max power until the car reaches its limit; feeds the
+    // battery line and the session price, so the two always agree
+    let room = isNaN(soc) ? Infinity : Math.max((Math.max(st.limit, soc) - soc) * st.whPerPct, 0);
+    for (const h of hours) {
+      h.wh = Math.min(h.frac * st.maxPower, room);
+      room -= h.wh;
+    }
+    const session = this._session(hours);
     const editable = st.mode === "manual";
-    // the current 15-min slot, i.e. exactly what evcc (and the price chip) report
-    const curRate = rates.find((r) => new Date(r.start) <= now && now < new Date(r.end));
     const hasUnknown = hours.some((h) => h.value === null);
     const hint = editable
       ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
@@ -470,9 +482,9 @@ class EvccPriceCard extends HTMLElement {
         .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
         .title { font-size: 16px; font-weight: 500; color: var(--ink); line-height: 1.3; }
         .status { font-size: 13px; color: var(--muted); margin-top: 2px; line-height: 1.4; text-wrap: pretty; }
-        .now-price { text-align: right; flex: none; }
-        .now-price b { font-size: 26px; font-weight: 400; color: var(--ink); line-height: 1.1; letter-spacing: -0.01em; }
-        .now-price span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .session { text-align: right; flex: none; }
+        .session b { font-size: 26px; font-weight: 400; color: var(--ink); line-height: 1.1; letter-spacing: -0.01em; }
+        .session span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
         svg { width: 100%; height: auto; display: block; margin-top: 18px; overflow: visible; }
         svg.editable { touch-action: none; cursor: pointer; user-select: none; -webkit-user-select: none; }
         .hit { fill: transparent; }
@@ -484,9 +496,9 @@ class EvccPriceCard extends HTMLElement {
         svg.editable .hit:hover + .bar:not(.charging) { fill: color-mix(in srgb, var(--accent) 30%, transparent); }
         .grid { stroke: var(--divider-color); stroke-dasharray: 1 3; }
         .base { stroke: var(--divider-color); }
-        .x, .y, .cheap, .note { font-size: 11px; fill: var(--muted); pointer-events: none; }
+        .x, .y, .note { font-size: 11px; fill: var(--muted); pointer-events: none; }
         .note { paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
-        .x, .cheap, .note { text-anchor: middle; }
+        .x, .note { text-anchor: middle; }
         .y { text-anchor: end; }
         .soc-line { fill: none; stroke: var(--ink); stroke-width: 1.5; stroke-linejoin: round; pointer-events: none; }
         .soc-dot { fill: var(--ink); pointer-events: none; }
@@ -497,7 +509,6 @@ class EvccPriceCard extends HTMLElement {
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .soc-end { font-size: 11px; font-weight: 500; fill: var(--ink); text-anchor: end; pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
-        .cheap { fill: var(--ink); font-weight: 500; paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .now { stroke: var(--ink); stroke-width: 1; pointer-events: none; }
         .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
@@ -527,7 +538,7 @@ class EvccPriceCard extends HTMLElement {
             <div class="title">${c.title}</div>
             <div class="status">${this._status(st, slots)}</div>
           </div>
-          <div class="now-price"><b>${curRate ? eur(curRate.value) : "–"}</b><span>per kWh now</span></div>
+          ${session}
         </div>
         ${this._chart(hours, editable, st)}
         <div class="legend">
