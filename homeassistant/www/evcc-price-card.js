@@ -22,8 +22,10 @@
  *   solar_kwp        panel peak power for that forecast; base_load = house use (W) it must cover first
  * Colours come from the active theme; charging hours use the oak accent.
  *
- * Deploy: copy to <config>/www/evcc-price-card.js and load it via
- *   frontend: extra_module_url: [/local/evcc-price-card.js?v=26]
+ * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=26.
+ * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
+ * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
 const VERSION = 26;
@@ -694,8 +696,8 @@ class EvccPriceCard extends HTMLElement {
 }
 
 // HA (2026.3) replaces window.customElements with a scoped-registry polyfill during
-// boot. extra_module_url runs this file early; served from cache it can run *before*
-// that swap, landing the card in the native registry, which HA never reads
+// boot. Loaded early (formerly via extra_module_url, or from cache), this file can run
+// *before* that swap, landing the card in the native registry, which HA never reads
 // ("Custom element doesn't exist" for good). So wait for HA's registry, then define.
 // shortcut: 10 s fallback defines in whatever registry exists, in case HA drops the polyfill.
 const register = () => {
