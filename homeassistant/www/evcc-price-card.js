@@ -23,12 +23,12 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=30.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=31.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 30;
+const VERSION = 31;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -597,10 +597,21 @@ class EvccPriceCard extends HTMLElement {
     // the mode wants charging right now but evcc hasn't started yet: it acts on its next
     // 30 s cycle. Loading for up to 90 s after a change; after that it's the car.
     const changed = Math.max(...[c.mode_sensor, c.manual_entity, c.solar_entity, c.hours_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
-    if (!st.transition && !st.power && st.connected && Date.now() - changed < 90e3 && this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b)) {
+    const wantsNow = this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b);
+    const recent = Date.now() - changed < 90e3;
+    if (!st.transition && !st.power && st.connected && recent && wantsNow) {
       st.transition = "starting";
       st.pvLeft = null;
     }
+    // Stopping covers evcc's whole wind-down: from the change until its stop timer starts
+    // (a cycle later), and after the timer until the power reading actually drops to 0.
+    // Not for Solar: there, charging right after the switch can be real surplus.
+    if (!st.transition && st.power > 0 && st.mode !== "solar" && !wantsNow && (recent || Date.now() < (this._stopUntil || 0))) {
+      st.transition = "stopping";
+      st.pvLeft = 0;
+    }
+    if (st.transition === "stopping") this._stopUntil = Date.now() + 60e3;
+    if (!st.power) this._stopUntil = 0;
     const slots = this._slots(st, now);
     const hours = quarterly(rates, slots, now);
     const pv = this._solarForecast();
