@@ -3,7 +3,8 @@
  * granularity) with the quarters the car will charge, their cost, and the charge mode.
  * The mode lives in HA (input_select); HA's evcc_mode automation drives evcc (packages/evcc.yaml).
  *   3 phases:
- *   Smart   only the cheapest quarters evcc's planner picks for the car's target, off otherwise
+ *   Smart   the cheapest quarters with a known price before the car's target (HA's
+ *           script.evcc_smart_plan), off otherwise. Tap Smart again to replan with newer prices
  *   Manual  drag across the bars to paint the quarters yourself; Clear = stay off
  *   Fast    charge now at full power; the bars show the projection until full
  *   1 phase:
@@ -11,23 +12,25 @@
  *
  * Reads only HA entities (the browser can't reach evcc through the tunnel):
  *   forecast_entity  attributes.rates  [{start, end, value}]  (sensor.evcc_price_forecast)
- *   plan_entity      attributes.plan / .power                  (sensor.evcc_charge_plan)
+ *   plan_entity      attributes.power                          (sensor.evcc_charge_plan)
  *   soc_entity       state + effectivePlanSoc / effectivePlanTime / chargeRemainingEnergy
  *   mode_entity      input_select: smart / fast / manual / solar
  *   mode_sensor      evcc's own mode (off / now / smart), to see when it has followed a change
  *   power_entity     charge power in W
  *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
+ *   smart_entity     input_text: Smart's quarters, same format + ":<quarter the known prices ended>"
+ *   smart_script     plans Smart and selects it
  *   solar_forecast_entity  attributes.time / .global_tilted_irradiance (Open-Meteo, 15 min, UTC)
  *   solar_kwp        panel peak power for that forecast; base_load = house use (W) it must cover first
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=36.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=38.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 36;
+const VERSION = 38;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -54,6 +57,8 @@ const DEFAULTS = {
   mode_sensor: "sensor.evcc_mode",
   power_entity: "sensor.evcc_charge_power",
   hours_entity: "input_text.evcc_manual_hours",
+  smart_entity: "input_text.evcc_smart_hours",
+  smart_script: "script.evcc_smart_plan",
   solar_forecast_entity: "sensor.solar_forecast",
   solar_kwp: 4, // placeholder until the real panels are known
   base_load: 300, // shortcut: a flat house load; a learned profile would be better once there's history
@@ -86,7 +91,7 @@ const epochQuarter = (ms) => Math.floor(ms / QUARTER);
 // The HA automation (packages/evcc.yaml) decodes the same format.
 function parseQuarters(value) {
   const out = new Set();
-  const m = /^(\d+):([0-9a-f]*)$/.exec(String(value || ""));
+  const m = /^(\d+):([0-9a-f]*)(?::\d+)?$/.exec(String(value || ""));
   if (!m) return out;
   [...m[2]].forEach((c, d) => {
     for (let b = 0; b < 4; b++) if (parseInt(c, 16) & (8 >> b)) out.add(+m[1] + d * 4 + b);
@@ -224,7 +229,7 @@ class EvccPriceCard extends HTMLElement {
     }
     if (this._drag) return; // never rebuild the chart under a finger
     // Re-render only when one of our entities changed.
-    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.mode_sensor, c.power_entity, c.hours_entity, c.solar_forecast_entity]
+    const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.mode_sensor, c.power_entity, c.hours_entity, c.smart_entity, c.solar_forecast_entity]
       .map((e) => hass.states[e]?.last_updated)
       .join("|") + epochQuarter(Date.now());
     if (sig === this._sig) return;
@@ -239,7 +244,11 @@ class EvccPriceCard extends HTMLElement {
     this._pending = { mode, until: Date.now() + 15000 };
     this._sig = null;
     this._render();
-    this._hass.callService("input_select", "select_option", { entity_id: c.mode_entity, option: mode }).catch(() => {
+    // Smart goes through the script: it plans first, then selects the mode (also a replan when already on Smart)
+    const call = mode === "smart"
+      ? this._hass.callService("script", "turn_on", { entity_id: c.smart_script })
+      : this._hass.callService("input_select", "select_option", { entity_id: c.mode_entity, option: mode });
+    call.catch(() => {
       this._pending = null;
       this._sig = null;
       this.hass = this._hass; // snap back to the real mode
@@ -348,7 +357,7 @@ class EvccPriceCard extends HTMLElement {
 
   _modeSlots(st, now) {
     if (st.mode === "manual") return [...st.manual].map((q) => [q * QUARTER, (q + 1) * QUARTER]);
-    if (st.mode === "smart") return (st.plan || []).map((p) => [new Date(p.start).getTime(), new Date(p.end).getTime()]);
+    if (st.mode === "smart") return [...st.smart].map((q) => [q * QUARTER, (q + 1) * QUARTER]);
     if (st.mode === "fast" && st.soc < (st.limit || 100)) {
       const hours = st.remainingWh && st.maxPower ? st.remainingWh / st.maxPower : 1;
       return [[now.getTime(), now.getTime() + hours * HOUR]];
@@ -365,7 +374,7 @@ class EvccPriceCard extends HTMLElement {
   }
 
   _modeStatus(st, slots) {
-    const { soc, mode, power, planSoc, planTime, plan } = st;
+    const { soc, mode, power, planSoc, planTime } = st;
     const kw = power > 0 ? `charging at ${(power / 1000).toFixed(1)} kW` : "";
     if (st.connected === false) return mode === "solar" ? "Solar: not plugged in, charges on 1 phase from surplus" : "Car not plugged in";
     if (mode === "off") return "Off, not charging";
@@ -388,13 +397,11 @@ class EvccPriceCard extends HTMLElement {
     const live = kw ? `. Now ${kw}` : "";
     if (!planTime) return st.transition === "fetching" ? "Smart: fetching the plan" : kw ? `Smart, ${kw}` : "Smart: no charging target set in evcc";
     const t = hhmm(planTime);
-    if (!plan?.length) {
-      return (st.knownUntil && st.knownUntil < planTime
-        ? `Plan ${planSoc}% by ${t}, waiting for tomorrow's prices (~13:00)`
-        : `Plan ${planSoc}% by ${t}, already reached`) + live;
-    }
-    const first = new Date(Math.min(...plan.map((p) => new Date(p.start).getTime())));
-    return `Plan ${planSoc}% by ${t}, charges from ${hhmm(first)}${live}`;
+    // planned before the prices reached the target, and they reach further now
+    const newer = st.smartKnown && st.smartKnown < planTime && st.knownUntil > st.smartKnown ? ". Newer prices are in: tap Smart to replan" : "";
+    const ahead = [...st.smart].filter((q) => (q + 1) * QUARTER > Date.now());
+    if (!ahead.length) return `Plan ${planSoc}% by ${t}, ${soc >= planSoc ? "already reached" : "nothing planned"}${live}${newer}`;
+    return `Plan ${planSoc}% by ${t}, charges from ${hhmm(new Date(Math.min(...ahead) * QUARTER))}${live}${newer}`;
   }
 
   _chart(hours, editable, st) {
@@ -575,6 +582,8 @@ class EvccPriceCard extends HTMLElement {
       soc,
       mode: this._pending?.mode ?? this._mode(),
       manual: this._manualHours(),
+      smart: parseQuarters(s[c.smart_entity]?.state),
+      smartKnown: (Number(String(s[c.smart_entity]?.state).split(":")[2]) || 0) * QUARTER || null,
       knownUntil: rates.length ? new Date(rates[rates.length - 1].end) : null,
       power: Number(s[c.power_entity]?.state) || 0,
       pvAction: socAttr.pvAction,
@@ -586,7 +595,6 @@ class EvccPriceCard extends HTMLElement {
       limit: Number(socAttr.effectiveLimitSoc) || 100,
       planSoc: socAttr.effectivePlanSoc,
       planTime,
-      plan: s[c.plan_entity]?.attributes?.plan,
     };
     // evcc is still acting on a change: a start/stop timer runs (pvAction enable/disable,
     // pvRemaining s as of the sensor's last update). Counted down here between polls.
@@ -602,7 +610,7 @@ class EvccPriceCard extends HTMLElement {
     const now = new Date();
     // the mode wants charging right now but evcc hasn't started yet: it acts on its next
     // 30 s cycle. Loading for up to 90 s after a change; after that it's the car.
-    const changed = Math.max(...[c.mode_entity, c.mode_sensor, c.hours_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
+    const changed = Math.max(...[c.mode_entity, c.mode_sensor, c.hours_entity, c.smart_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
     const wantsNow = this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b);
     const recent = Date.now() - changed < 90e3;
     // after leaving Solar, evcc's re-enabled plan reaches HA on its next 30 s poll
@@ -640,9 +648,10 @@ class EvccPriceCard extends HTMLElement {
       }
       st.solarNext = hours.find((h) => h.charging && h.start > now.getTime())?.start;
     }
-    // Wh charged per quarter at max power until the car reaches its limit; feeds the
-    // battery line and the session price, so the two always agree
-    let room = isNaN(soc) ? Infinity : Math.max((Math.max(st.limit, soc) - soc) * st.whPerPct, 0);
+    // Wh charged per quarter at max power until the car reaches its limit (Smart: its target,
+    // where HA stops it); feeds the battery line and the session price, so the two always agree
+    const stopAt = st.mode === "smart" && st.planSoc ? Math.min(st.limit, st.planSoc) : st.limit;
+    let room = isNaN(soc) ? Infinity : Math.max((Math.max(stopAt, soc) - soc) * st.whPerPct, 0);
     for (const h of hours) {
       h.wh = Math.min(h.frac * st.maxPower, room);
       room -= h.wh;
