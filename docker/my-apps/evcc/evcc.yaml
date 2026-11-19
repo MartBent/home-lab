@@ -74,7 +74,7 @@ tariffs:
 javascript:
   - vm: sim
     script: |
-      state = { enabled: false, current: 6, phases: 3, power: 0, kwh: 0, soc: 10, last: Date.now(), drain: null };
+      state = { enabled: false, current: 8, phases: 3, power: 0, kwh: 0, soc: 10, last: Date.now(), drain: null };
       function tick(drain) {
         var now = Date.now();
         if (drain !== undefined && state.drain !== null && drain !== state.drain) state.soc = 10;
@@ -144,4 +144,8 @@ loadpoints:
     meter: sim_charge_meter
     vehicle: sim_car
     # no default mode on purpose: evcc would reapply it on every restart and
-    # overrule the mode HA's Manual/Solar logic set; evcc keeps the last mode instead
+    # overrule the mode HA's evcc_mode automation set; evcc keeps the last mode instead.
+    # Set through the API and kept in evcc's database, not here: phases 3
+    # (POST /api/loadpoints/1/phases/3) and minCurrent 8 A (/api/loadpoints/1/mincurrent/8):
+    # the Kia e-Niro drops to 2 phases below 8 A, like this simulator pretends to be.
+    # Keep minCurrent equal to input_number.evcc_fast_current's min in HA.

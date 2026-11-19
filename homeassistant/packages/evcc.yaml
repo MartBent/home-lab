@@ -170,9 +170,9 @@ input_text:
 input_number:
   evcc_fast_current:
     name: evcc Fast current
-    # min = the car's minimum (Kia e-Niro: 8 A), max = the loadpoint's maxCurrent in evcc.yaml;
-    # the card and automation evcc_mode read both from here
-    min: 6
+    # min = the car's minimum (Kia e-Niro: 8 A, else it drops to 2 phases; evcc's loadpoint
+    # minCurrent is 8 too), max = the loadpoint's maxCurrent; the card and automation read both here
+    min: 8
     max: 16
     step: 1
     unit_of_measurement: A
