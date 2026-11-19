@@ -22,12 +22,12 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=32.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=33.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 32;
+const VERSION = 33;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -359,7 +359,8 @@ class EvccPriceCard extends HTMLElement {
   _status(st, slots) {
     let text = this._modeStatus(st, slots);
     // evcc's own start/stop timers (e.g. the 3-min wind-down after leaving Fast)
-    if (st.transition) text += !st.pvLeft ? `, ${st.transition}…` : `, ${st.transition} in ${st.pvLeft < 60 ? `${st.pvLeft} s` : `${Math.ceil(st.pvLeft / 60)} min`}`;
+    if (st.transition === "fetching") text += "…";
+    else if (st.transition) text += !st.pvLeft ? `, ${st.transition}…` : `, ${st.transition} in ${st.pvLeft < 60 ? `${st.pvLeft} s` : `${Math.ceil(st.pvLeft / 60)} min`}`;
     return text;
   }
 
@@ -385,7 +386,7 @@ class EvccPriceCard extends HTMLElement {
     // Smart: the plan comes first; live charging (surplus, or evcc's 3-min wind-down after
     // leaving Fast) is added, so a charging car never hides why no quarters are planned
     const live = kw ? `. Now ${kw}` : "";
-    if (!planTime) return kw ? `Smart, ${kw}` : "Smart: no charging target set in evcc";
+    if (!planTime) return st.transition === "fetching" ? "Smart: fetching the plan" : kw ? `Smart, ${kw}` : "Smart: no charging target set in evcc";
     const t = hhmm(planTime);
     if (!plan?.length) {
       return (st.knownUntil && st.knownUntil < planTime
@@ -605,6 +606,11 @@ class EvccPriceCard extends HTMLElement {
     const changed = Math.max(...[c.mode_entity, c.mode_sensor, c.hours_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
     const wantsNow = this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b);
     const recent = Date.now() - changed < 90e3;
+    // after leaving Solar, evcc's re-enabled plan reaches HA on its next 30 s poll
+    if (st.mode === "smart" && !st.planTime && recent) {
+      st.transition = "fetching";
+      st.pvLeft = null;
+    }
     if (!st.transition && !st.power && st.connected && recent && wantsNow) {
       st.transition = "starting";
       st.pvLeft = null;
