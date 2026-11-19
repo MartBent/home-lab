@@ -22,12 +22,12 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=33.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=36.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 33;
+const VERSION = 36;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -501,16 +501,15 @@ class EvccPriceCard extends HTMLElement {
   // waiting for the car to be unplugged or happening now. HA only sends a phase change while
   // the car is unplugged; evcc applies it at the next plug-in, before power flows.
   _phaseCaption(st, g) {
-    const base = g === 3 ? "3 phases" : "1 phase";
     const want = st.mode === "solar" ? 1 : 3, cfg = Number(st.phasesConfigured);
     if (g === want) {
-      if (st.connected && cfg !== want) return { text: `${base} · after unplug`, cls: " next" };
-      if (!st.connected && cfg !== want) return { text: `${base} · switching…`, cls: " switching" };
-      if (st.connected && st.phasesActive && st.phasesActive !== want) return { text: `${base} · switching…`, cls: " switching" };
+      if (st.connected && cfg !== want) return { text: "after unplug", cls: " next" };
+      if (!st.connected && cfg !== want) return { text: "switching…", cls: " switching" };
+      if (st.connected && st.phasesActive && st.phasesActive !== want) return { text: "switching…", cls: " switching" };
     }
-    if (st.connected && st.phasesActive === g) return { text: `${base} · in use`, cls: " in-use" };
-    if (st.connected === false && cfg === g) return { text: `${base} · next plug-in`, cls: " next" };
-    return { text: base, cls: "" };
+    if (st.connected && st.phasesActive === g) return { text: "in use", cls: " in-use" };
+    if (st.connected === false && cfg === g) return { text: "next plug-in", cls: " next" };
+    return { text: "", cls: "" };
   }
 
   // Cost of the charging hours selected in the graph (plan, painted hours or Fast's
@@ -704,16 +703,19 @@ class EvccPriceCard extends HTMLElement {
         .pv { fill: color-mix(in srgb, var(--warning-color, #d9a400) 20%, transparent); stroke: none; pointer-events: none; }
         .pv-line { fill: none; stroke: var(--warning-color, #d9a400); stroke-width: 1.5; stroke-linejoin: round; pointer-events: none; }
         .legend i.unknown { background: color-mix(in srgb, var(--muted) 12%, transparent); }
-        .modes { display: flex; gap: 8px; margin-top: 20px; }
-        .group { min-width: 0; }
-        .pill { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px;
-                background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); }
+        .modes { display: flex; gap: 8px; margin-top: 20px; align-items: stretch; }
+        /* each phase group is its own small card: status top-left, buttons at the bottom */
+        .group { min-width: 0; display: flex; flex-direction: column; justify-content: space-between; gap: 6px; padding: 8px 4px 4px;
+                 background: var(--secondary-background-color); border-radius: calc(var(--ha-card-border-radius, 12px) * 0.7); }
+        .pill { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
         .modes ha-icon { --mdc-icon-size: 22px; display: block; margin: auto; pointer-events: none; }
-        .cap { font-size: 11px; color: var(--muted); text-align: center; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .cap.in-use { color: var(--ink); }
-        .cap.in-use::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; vertical-align: 1px; }
-        .cap.next { color: var(--accent); }
-        .cap.switching { color: var(--accent); animation: busy 900ms ease-in-out infinite alternate; }
+        /* two lines, top-left: the phase count, then its state (in use / after unplug / ...) */
+        .cap { font-size: 12px; line-height: 1.35; padding: 0 6px; text-align: left; }
+        .cap .ph { display: block; color: var(--ink); font-weight: 500; }
+        .cap .st { display: block; min-height: 1.35em; color: var(--muted); }
+        .cap.in-use .st::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 5px; vertical-align: 1px; }
+        .cap.next .st { color: var(--accent); }
+        .cap.switching .st { color: var(--accent); animation: busy 900ms ease-in-out infinite alternate; }
         .modes button { font: inherit; font-size: 14px; font-weight: 500; border: 0; background: none; color: var(--ink); min-height: 44px; padding: 0 4px;
                         border-radius: calc(var(--ha-card-border-radius, 12px) * 0.55); cursor: pointer;
                         transition: background-color 140ms cubic-bezier(0.16, 1, 0.3, 1), color 140ms, transform 90ms;
@@ -724,7 +726,7 @@ class EvccPriceCard extends HTMLElement {
         .modes button.on { background: var(--primary-color); color: var(--text-primary-color); }
         .modes button.busy { animation: busy 900ms ease-in-out infinite alternate; }
         @keyframes busy { to { opacity: 0.65; } }
-        @media (prefers-reduced-motion: reduce) { .modes button, .bar { transition: none; } .modes button.busy, .cap.switching { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .modes button, .bar { transition: none; } .modes button.busy, .cap.switching .st { animation: none; } }
         .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
         .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
         .modes button.on:disabled { opacity: 0.55; cursor: default; }
@@ -749,6 +751,7 @@ class EvccPriceCard extends HTMLElement {
           ${GROUPS.map(([phases, modes]) => {
             const cap = this._phaseCaption(st, phases);
             return `<div class="group" style="flex: ${modes.length}">
+              <div class="cap${cap.cls}"><span class="ph">${phases === 3 ? "3 phases" : "1 phase"}</span><span class="st">${cap.text}</span></div>
               <div class="pill" role="group" aria-label="${phases === 3 ? "3 phases" : "1 phase"}">
                 ${modes.map(([m, icon, label]) => {
                   // loading until evcc has done it: mode confirmed and any start/stop finished
@@ -760,7 +763,6 @@ class EvccPriceCard extends HTMLElement {
                   return `<button data-mode="${m}" aria-pressed="${on}" class="${on ? "on" : ""}${busy}" title="${label}" aria-label="${label}"><ha-icon icon="${icon}"></ha-icon></button>`;
                 }).join("")}
               </div>
-              <div class="cap${cap.cls}">${cap.text}</div>
             </div>`;
           }).join("")}
         </div>
