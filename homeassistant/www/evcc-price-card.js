@@ -23,12 +23,12 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=26.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=27.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 26;
+const VERSION = 27;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -390,16 +390,18 @@ class EvccPriceCard extends HTMLElement {
       const full = slots[slots.length - 1]; // the mode projection comes after the live slot
       return full && full[1] - full[0] > 60e3 ? `Fast, ${kw}, full around ${hhmm(new Date(full[1]))}` : `Fast, ${kw}`;
     }
-    if (kw) return kw[0].toUpperCase() + kw.slice(1);
-    if (!planTime) return "Smart: solar surplus only, no plan set";
+    // Smart: the plan comes first; live charging (surplus, or evcc's 3-min wind-down after
+    // leaving Fast) is added, so a charging car never hides why no quarters are planned
+    const live = kw ? `. Now ${kw}` : "";
+    if (!planTime) return kw ? `Smart, ${kw} from surplus` : "Smart: solar surplus only, no plan set";
     const t = hhmm(planTime);
     if (!plan?.length) {
-      return st.knownUntil && st.knownUntil < planTime
+      return (st.knownUntil && st.knownUntil < planTime
         ? `Plan ${planSoc}% by ${t}, waiting for tomorrow's prices (~13:00)`
-        : `Plan ${planSoc}% by ${t}, already reached`;
+        : `Plan ${planSoc}% by ${t}, already reached`) + live;
     }
     const first = new Date(Math.min(...plan.map((p) => new Date(p.start).getTime())));
-    return `Plan ${planSoc}% by ${t}, charges from ${hhmm(first)}`;
+    return `Plan ${planSoc}% by ${t}, charges from ${hhmm(first)}${live}`;
   }
 
   _chart(hours, editable, st) {
