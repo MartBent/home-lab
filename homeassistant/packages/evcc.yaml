@@ -323,6 +323,77 @@ automation:
             target:
               entity_id: sensor.evcc_vehicle_soc
 
+  # Coming home: ask how the car should charge, before it's plugged in (so Solar's switch to
+  # 1 phase can still happen: phases only change while unplugged). The answer comes back as a
+  # mobile_app_notification_action event, handled by evcc_charge_choice below.
+  - id: evcc_arrival_ask
+    alias: evcc ask how to charge on arrival
+    mode: single
+    triggers:
+      # the phone, not person.mart_bent: that also follows an iPad that never leaves home
+      - trigger: state
+        entity_id: device_tracker.mobiel_mart
+        to: home
+    conditions:
+      - "{{ trigger.from_state.state not in ['unknown', 'unavailable', 'home'] }}" # not on an HA restart
+      # GPS flapping at the edge of the zone: one question per arrival
+      - "{{ this.attributes.last_triggered is none or now() - this.attributes.last_triggered > timedelta(hours=2) }}"
+    actions:
+      - variables:
+          plan: "{{ (state_attr('sensor.evcc_mode', 'repeatingPlans') or [{'soc': 80, 'time': '07:00'}]) | first }}"
+          # tomorrow's sun beyond the house's base load, same sums as the card: W = W/m2 x 4 kWp x 0.85
+          # losses, minus 300 W; Open-Meteo's times are UTC
+          # shortcut: kWp and base load copied from www/evcc-price-card.js (solar_kwp, base_load); move both when the real panels are known
+          sun_kwh: >-
+            {%- set a = state_attr('sensor.solar_forecast', 'time') or [] -%}
+            {%- set g = state_attr('sensor.solar_forecast', 'global_tilted_irradiance') or [] -%}
+            {%- set tomorrow = (now() + timedelta(days=1)).date() -%}
+            {%- set ns = namespace(wh=0) -%}
+            {%- for i in range([a | count, g | count] | min) -%}
+              {%- if (a[i] ~ '+00:00') | as_datetime | as_local | as_timestamp | timestamp_custom('%Y-%m-%d') == tomorrow | string -%}
+                {%- set ns.wh = ns.wh + ([(g[i] or 0) * 4 * 0.85 - 300, 0] | max) / 4 -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ (ns.wh / 1000) | round(0) | int }}
+      - action: notify.mobile_app_mobiel_mart
+        data:
+          title: Welcome home. How should the car charge?
+          message: >-
+            Smart: the cheapest hours to {{ plan.soc }}% by {{ plan.time }}, for work tomorrow.
+            Solar: only your own surplus, about {{ sun_kwh }} kWh of spare sun expected tomorrow.
+          data:
+            tag: evcc_charge_choice # a later question replaces this one
+            actions:
+              - action: EVCC_SMART
+                title: Smart
+              - action: EVCC_SOLAR
+                title: Solar
+
+  - id: evcc_charge_choice
+    alias: evcc charge choice from notification
+    mode: queued
+    triggers:
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: EVCC_SMART
+        id: smart
+      - trigger: event
+        event_type: mobile_app_notification_action
+        event_data:
+          action: EVCC_SOLAR
+        id: solar
+    actions:
+      # as the card's Smart button: a fresh plan first, then the mode
+      - if: "{{ trigger.id == 'smart' }}"
+        then:
+          - action: script.evcc_smart_plan
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evcc_charge_mode
+        data:
+          option: "{{ trigger.id }}"
+
   - id: evcc_simulated_car_plug
     alias: evcc simulated car plug
     mode: queued
