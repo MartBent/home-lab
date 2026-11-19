@@ -23,12 +23,12 @@
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=27.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=30.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 27;
+const VERSION = 30;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -193,6 +193,7 @@ class EvccPriceCard extends HTMLElement {
 
   disconnectedCallback() {
     this._ro?.disconnect();
+    clearTimeout(this._tick);
   }
 
   getCardSize() {
@@ -364,7 +365,9 @@ class EvccPriceCard extends HTMLElement {
   }
 
   _status(st, slots) {
-    const text = this._modeStatus(st, slots);
+    let text = this._modeStatus(st, slots);
+    // evcc's own start/stop timers (e.g. the 3-min wind-down after leaving Fast)
+    if (st.transition) text += !st.pvLeft ? `, ${st.transition}…` : `, ${st.transition} in ${st.pvLeft < 60 ? `${st.pvLeft} s` : `${Math.ceil(st.pvLeft / 60)} min`}`;
     // a phase change waits for the car to be unplugged (see automation evcc_solar)
     const want = st.mode === "solar" ? 1 : 3;
     if (st.connected && st.phasesConfigured !== null && st.phasesConfigured !== want) return `${text}. ${want === 1 ? "1 phase" : "3 phases"} after you unplug`;
@@ -386,7 +389,7 @@ class EvccPriceCard extends HTMLElement {
       return st.solarNext ? `Solar: waiting for surplus, expected from ${hhmm(new Date(st.solarNext))}` : "Solar: no surplus expected in the next 24 h";
     }
     if (mode === "now") {
-      if (!kw) return "Fast: waiting for the car";
+      if (!kw) return st.transition ? "Fast" : "Fast: waiting for the car";
       const full = slots[slots.length - 1]; // the mode projection comes after the live slot
       return full && full[1] - full[0] > 60e3 ? `Fast, ${kw}, full around ${hhmm(new Date(full[1]))}` : `Fast, ${kw}`;
     }
@@ -531,6 +534,22 @@ class EvccPriceCard extends HTMLElement {
     return out;
   }
 
+  // While evcc is mid-change, redraw every 2 s (countdown, pulsing button) and ask HA for
+  // fresh evcc state every 10 s (the REST sensors' minimum) instead of waiting for the 30 s poll.
+  _scheduleTick(waiting) {
+    clearTimeout(this._tick);
+    if (!waiting || !this.isConnected) return;
+    if (Date.now() - (this._lastRefresh || 0) > 10000) {
+      this._lastRefresh = Date.now();
+      this._hass.callService("homeassistant", "update_entity", { entity_id: this._config.soc_entity }).catch(() => {});
+    }
+    this._tick = setTimeout(() => {
+      if (this._drag) return this._scheduleTick(true);
+      this._sig = null;
+      this._render();
+    }, 2000);
+  }
+
   // A render failure shows inside the card (and in HA's log) instead of taking it down.
   _render() {
     try {
@@ -553,6 +572,7 @@ class EvccPriceCard extends HTMLElement {
       manual: this._manualHours(),
       knownUntil: rates.length ? new Date(rates[rates.length - 1].end) : null,
       power: Number(s[c.power_entity]?.state) || 0,
+      pvAction: socAttr.pvAction,
       maxPower: Number(s[c.plan_entity]?.attributes?.power) || 0,
       remainingWh: Number(socAttr.chargeRemainingEnergy) || 0,
       connected: socAttr.connected,
@@ -562,12 +582,25 @@ class EvccPriceCard extends HTMLElement {
       planTime,
       plan: s[c.plan_entity]?.attributes?.plan,
     };
+    // evcc is still acting on a change: a start/stop timer runs (pvAction enable/disable,
+    // pvRemaining s as of the sensor's last update). Counted down here between polls.
+    const pvLeft = Math.max(0, Math.round((Number(socAttr.pvRemaining) || 0) - (Date.now() - Date.parse(s[c.soc_entity]?.last_updated)) / 1000));
+    st.pvLeft = pvLeft;
+    // stays on after the countdown hits 0 until evcc reports the stop/start (its next cycle)
+    st.transition = st.pvAction === "disable" && st.power > 0 ? "stopping" : st.pvAction === "enable" && !st.power ? "starting" : null;
     // Wh per battery % from evcc's own remaining-energy estimate (charging losses included)
     st.whPerPct = st.remainingWh && st.limit > st.soc ? st.remainingWh / (st.limit - st.soc) : 650;
     if (!st.maxPower) st.maxPower = 11040;
     // on 1 phase the car gets a third of the power (230 V x max current)
     if (Number(socAttr.phasesActive) === 1) st.maxPower = 230 * (Number(socAttr.maxCurrent) || 16);
     const now = new Date();
+    // the mode wants charging right now but evcc hasn't started yet: it acts on its next
+    // 30 s cycle. Loading for up to 90 s after a change; after that it's the car.
+    const changed = Math.max(...[c.mode_sensor, c.manual_entity, c.solar_entity, c.hours_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
+    if (!st.transition && !st.power && st.connected && Date.now() - changed < 90e3 && this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b)) {
+      st.transition = "starting";
+      st.pvLeft = null;
+    }
     const slots = this._slots(st, now);
     const hours = quarterly(rates, slots, now);
     const pv = this._solarForecast();
@@ -599,6 +632,7 @@ class EvccPriceCard extends HTMLElement {
       ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
       : "Smart follows the plan. Solar: own surplus only, 1 phase. Manual: paint the hours yourself. Fast: full power now.";
 
+    this._scheduleTick(st.transition || this._pending);
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; --accent: var(--accent-color); --ink: var(--primary-text-color); --muted: var(--secondary-text-color);
@@ -682,7 +716,8 @@ class EvccPriceCard extends HTMLElement {
         </div>
         <div class="modes" role="group" aria-label="Charging mode">
           ${MODES.map(([m, label]) => {
-            const on = st.mode === m, busy = this._pending?.mode === m ? " busy" : "";
+            // loading until evcc has done it: mode confirmed and any start/stop timer finished
+            const on = st.mode === m, busy = this._pending?.mode === m || (on && st.transition) ? " busy" : "";
             // selected Manual turns into Clear; with nothing painted there is nothing to clear
             if (m === "manual" && on) {
               return `<button data-action="clear" class="on${busy}" aria-label="Clear charging hours" ${st.manual.size ? "" : "disabled"}>Clear</button>`;

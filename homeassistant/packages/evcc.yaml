@@ -36,7 +36,7 @@ rest:
         state_class: measurement
         json_attributes_path: "$.loadpoints[0]"
         json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc,
-                          connected, phasesConfigured, phasesActive, minCurrent, maxCurrent]
+                          connected, phasesConfigured, phasesActive, minCurrent, maxCurrent, pvAction, pvRemaining]
 
       - name: evcc Mode
         unique_id: evcc_mode
