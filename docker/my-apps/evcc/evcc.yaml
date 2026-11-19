@@ -148,4 +148,4 @@ loadpoints:
     # Set through the API and kept in evcc's database, not here: phases 3
     # (POST /api/loadpoints/1/phases/3) and minCurrent 8 A (/api/loadpoints/1/mincurrent/8):
     # the Kia e-Niro drops to 2 phases below 8 A, like this simulator pretends to be.
-    # Keep minCurrent equal to input_number.evcc_fast_current's min in HA.
+    # HA's Fast mode reads minCurrent from evcc and assumes maxCurrent 16 A (the charger's 3x16 A).

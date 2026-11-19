@@ -165,31 +165,12 @@ input_text:
     name: evcc Smart hours
     max: 255
 
-# Fast: charge up to this % at this current (3 phases), both set by dragging the card's
-# target dot: up/down for the %, sideways for the time, which sets the current.
-input_number:
-  evcc_fast_current:
-    name: evcc Fast current
-    # min = the car's minimum (Kia e-Niro: 8 A, else it drops to 2 phases; evcc's loadpoint
-    # minCurrent is 8 too), max = the loadpoint's maxCurrent; the card and automation read both here
-    min: 8
-    max: 16
-    step: 1
-    unit_of_measurement: A
-    icon: mdi:current-ac
-  evcc_fast_limit:
-    name: evcc Fast target
-    min: 10
-    max: 100
-    step: 5
-    unit_of_measurement: "%"
-    icon: mdi:battery-charging-high
-
 script:
   # Smart's plan: the cheapest quarters with a known price before the car's target, enough
   # for evcc's estimated charge time. evcc's own planner would plan nothing before ~13:00 (it
-  # counts on the unpriced night). Fixed until the next tap on Smart, which replans.
-  # Optional soc + time set a new target first (evcc recomputes the charge time at once).
+  # counts on the unpriced night). Fixed until the next tap on Smart (the card runs this, then
+  # selects Smart) or a new target. Optional soc + time set that shared Smart/Fast target first
+  # (evcc recomputes the charge time at once). Doesn't change the mode.
   evcc_smart_plan:
     alias: evcc Smart plan
     mode: queued
@@ -205,10 +186,11 @@ script:
             data:
               soc: "{{ soc | int }}"
               time: "{{ time }}"
-      # full current first: evcc's charge time uses the loadpoint's max current, which Fast may have lowered
+      # full current first (16 A = the loadpoint's maxCurrent): evcc's charge time uses the loadpoint's
+      # max current, which Fast may have lowered; the automation run at the end puts Fast's back
       - action: rest_command.evcc_set_max_current
         data:
-          current: "{{ state_attr('input_number.evcc_fast_current', 'max') | int }}"
+          current: 16
       - action: rest_command.evcc_get
         data:
           path: loadpoints/1/plan
@@ -243,22 +225,23 @@ script:
           entity_id: input_text.evcc_smart_hours
         data:
           value: "{{ value }}"
-      - action: input_select.select_option
-        target:
-          entity_id: input_select.evcc_charge_mode
-        data:
-          option: smart
-      - action: homeassistant.update_entity # the card and the target-SoC stop read these
+      - action: homeassistant.update_entity # the card and the automation read the new target here
         target:
           entity_id: [sensor.evcc_charge_plan, sensor.evcc_vehicle_soc]
+      - action: automation.trigger # Fast's current for the new target, and back from the full current above
+        target:
+          entity_id: automation.evcc_mode
+        data:
+          skip_condition: false
 
 automation:
   - id: evcc_mode
     alias: evcc mode
     description: >-
-      Drives evcc from input_select.evcc_charge_mode. Fast = evcc "now" at
-      input_number.evcc_fast_current until input_number.evcc_fast_limit, "off" from
-      there; the other modes get the full current. Smart = "now" in the quarters
+      Drives evcc from input_select.evcc_charge_mode. Smart and Fast share one target,
+      evcc's daily repeating plan (soc by time). Fast = evcc "now" at the lowest whole-amp
+      current that reaches it in time (recomputed every minute, so it keeps aiming at the
+      time), "off" once there; the other modes get the full current. Smart = "now" in the quarters
       script.evcc_smart_plan picked, until the target SoC, "off" otherwise: no solar
       logic, so no 3-min wind-down. Solar = evcc "smart" with the repeating plans off,
       i.e. surplus only. Phases: 3, Solar 1, only ever sent while the car is unplugged
@@ -273,8 +256,6 @@ automation:
       - trigger: state
         entity_id:
           - input_select.evcc_charge_mode
-          - input_number.evcc_fast_limit
-          - input_number.evcc_fast_current
           - input_text.evcc_smart_hours
           - sensor.evcc_mode # evcc's real mode drifted: put it back
       - trigger: state
@@ -290,6 +271,8 @@ automation:
           mode: "{{ states('input_select.evcc_charge_mode') }}"
           t: "{{ now().timestamp() }}"
           soc: "{{ states('sensor.evcc_vehicle_soc') | float(100) }}"
+          # the shared target; evcc reports 0 once the car is past it (or its plan is off, in Solar)
+          target: "{{ state_attr('sensor.evcc_vehicle_soc', 'effectivePlanSoc') | float(0) }}"
           # this quarter is one of Smart's
           planned: >-
             {%- set s = states('input_text.evcc_smart_hours') -%}
@@ -297,8 +280,16 @@ automation:
             {%- set i = (t // 900) | int - (s.split(':')[0] | int(0)) -%}
             {{ 0 <= i < bits | length * 4 and ((bits[i // 4] | int(0, 16)) // 2 ** (3 - i % 4)) % 2 == 1 }}
           want: >-
-            {% if mode == 'fast' %}{{ 'now' if soc < states('input_number.evcc_fast_limit') | float(100) else 'off' }}{% elif mode == 'smart' %}{{ 'now' if planned | bool and soc < state_attr('sensor.evcc_vehicle_soc', 'effectivePlanSoc') | float(0) else 'off' }}{% else %}smart{% endif %}
-          current: "{{ (states('input_number.evcc_fast_current') if mode == 'fast' else state_attr('input_number.evcc_fast_current', 'max')) | float(16) | int }}"
+            {% if mode == 'fast' %}{{ 'now' if soc < target else 'off' }}{% elif mode == 'smart' %}{{ 'now' if planned | bool and soc < target else 'off' }}{% else %}smart{% endif %}
+          # Fast on 3 phases: energy to the target (evcc's Wh per %, losses included) over the time left,
+          # in whole amps between evcc's minCurrent and 16 A (the loadpoint's maxCurrent); the card does the same sums
+          current: >-
+            {%- set a = state_attr('sensor.evcc_vehicle_soc', 'chargeRemainingEnergy') | float(0) -%}
+            {%- set limit = state_attr('sensor.evcc_vehicle_soc', 'effectiveLimitSoc') | float(100) -%}
+            {%- set wh = a / (limit - soc) if a > 0 and limit > soc else 650 -%}
+            {%- set hours = [(as_timestamp(state_attr('sensor.evcc_vehicle_soc', 'effectivePlanTime'), 0) - t) / 3600, 1 / 60] | max -%}
+            {%- set amps = ([target - soc, 0] | max) * wh / (hours * 690) -%}
+            {{ ([[amps | round(0, 'ceil') | int, state_attr('sensor.evcc_vehicle_soc', 'minCurrent') | int(6)] | max, 16] | min) if mode == 'fast' else 16 }}
           plans_active: "{{ mode != 'solar' }}"
           phases: "{{ 1 if mode == 'solar' else 3 }}"
       # Solar must not charge from the grid for the plan; the other modes keep it so Smart has a target
