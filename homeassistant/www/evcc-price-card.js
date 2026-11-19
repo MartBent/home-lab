@@ -19,18 +19,18 @@
  *   power_entity     charge power in W
  *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
  *   smart_entity     input_text: Smart's quarters, same format + ":<quarter the known prices ended>"
- *   smart_script     plans Smart and selects it
+ *   smart_script     plans Smart and selects it; with soc + time it sets evcc's target first
  *   solar_forecast_entity  attributes.time / .global_tilted_irradiance (Open-Meteo, 15 min, UTC)
  *   solar_kwp        panel peak power for that forecast; base_load = house use (W) it must cover first
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=38.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=39.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 38;
+const VERSION = 39;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -162,6 +162,10 @@ class EvccPriceCard extends HTMLElement {
         if (b) this._setMode(b.dataset.mode);
         if (e.target.closest("button[data-action=clear]")) this._saveHours(new Set());
       });
+      root.addEventListener("change", (e) => e.target.closest("[data-target]") && this._setTarget());
+      // no re-render under an open picker or a half-typed time; HA's next update redraws after
+      root.addEventListener("focusin", (e) => e.target.closest("[data-target]") && (this._editing = Date.now()));
+      root.addEventListener("input", (e) => e.target.closest("[data-target]") && (this._editing = Date.now()));
       root.addEventListener("pointerdown", (e) => {
         this._hover(e);
         this._dragStart(e);
@@ -228,6 +232,7 @@ class EvccPriceCard extends HTMLElement {
       this._sig = null;
     }
     if (this._drag) return; // never rebuild the chart under a finger
+    if (this.shadowRoot.activeElement?.closest("[data-target]") && Date.now() - (this._editing || 0) < 10000) return;
     // Re-render only when one of our entities changed.
     const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.mode_sensor, c.power_entity, c.hours_entity, c.smart_entity, c.solar_forecast_entity]
       .map((e) => hass.states[e]?.last_updated)
@@ -253,6 +258,28 @@ class EvccPriceCard extends HTMLElement {
       this._sig = null;
       this.hass = this._hass; // snap back to the real mode
     });
+  }
+
+  // Smart's target from the card: evcc's repeating plan gets it, then Smart replans.
+  // Debounced: a typed time fires change per segment.
+  _setTarget() {
+    const soc = Number(this.shadowRoot.querySelector("[data-target=soc]")?.value);
+    const time = this.shadowRoot.querySelector("[data-target=time]")?.value;
+    if (!(soc >= 1 && soc <= 100) || !/^\d\d:\d\d$/.test(time || "")) return;
+    this._targetPending = { soc, time, until: Date.now() + 15000 };
+    clearTimeout(this._targetTimer);
+    this._targetTimer = setTimeout(() => {
+      this._pending = { mode: "smart", until: Date.now() + 15000 };
+      this._sig = null;
+      this._render();
+      this._hass
+        .callService("script", "turn_on", { entity_id: this._config.smart_script, variables: { soc, time } })
+        .catch(() => {
+          this._targetPending = this._pending = null;
+          this._sig = null;
+          this._render();
+        });
+    }, 800);
   }
 
   _manualHours() {
@@ -596,6 +623,8 @@ class EvccPriceCard extends HTMLElement {
       planSoc: socAttr.effectivePlanSoc,
       planTime,
     };
+    const tp = this._targetPending;
+    if (tp && ((st.planSoc === tp.soc && planTime && hhmm(planTime) === tp.time) || Date.now() > tp.until)) this._targetPending = null;
     // evcc is still acting on a change: a start/stop timer runs (pvAction enable/disable,
     // pvRemaining s as of the sensor's last update). Counted down here between polls.
     const pvLeft = Math.max(0, Math.round((Number(socAttr.pvRemaining) || 0) - (Date.now() - Date.parse(s[c.soc_entity]?.last_updated)) / 1000));
@@ -662,6 +691,17 @@ class EvccPriceCard extends HTMLElement {
     const hint = editable
       ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
       : "Smart: cheapest quarters. Manual: paint them yourself. Fast: full power now. Solar: own surplus only.";
+    // Smart: its target, editable; a change replans
+    const tSoc = this._targetPending?.soc ?? st.planSoc ?? 80;
+    const tTime = this._targetPending?.time ?? (st.planTime ? hhmm(st.planTime) : "07:00");
+    const socs = Array.from({ length: 17 }, (_, i) => 20 + i * 5);
+    if (!socs.includes(tSoc)) socs.push(tSoc), socs.sort((a, b) => a - b);
+    const target = st.mode === "smart"
+      ? `<div class="target">
+          <label>Charge to <select data-target="soc" aria-label="Target battery">${socs.map((v) => `<option value="${v}" ${v === tSoc ? "selected" : ""}>${v}%</option>`).join("")}</select></label>
+          <label>by <input type="time" data-target="time" step="900" value="${tTime}" aria-label="Target time" /></label>
+        </div>`
+      : "";
 
     this._scheduleTick(st.transition || this._pending);
     this.shadowRoot.innerHTML = `
@@ -738,6 +778,13 @@ class EvccPriceCard extends HTMLElement {
         @media (prefers-reduced-motion: reduce) { .modes button, .bar { transition: none; } .modes button.busy, .cap.switching .st { animation: none; } }
         .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
         .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
+        .target { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 14px; color: var(--muted); }
+        .target label { display: flex; align-items: center; gap: 8px; }
+        .target select, .target input {
+          font: inherit; color: var(--ink); background: var(--secondary-background-color);
+          border: 0; border-radius: 10px; padding: 0 10px; min-height: 36px; color-scheme: light dark;
+        }
+        .target select:focus-visible, .target input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
         .modes button.on:disabled { opacity: 0.55; cursor: default; }
       </style>
       <ha-card>
@@ -776,7 +823,7 @@ class EvccPriceCard extends HTMLElement {
           }).join("")}
         </div>
         <div class="foot">
-          <div class="hint">${hint}</div>
+          ${target || `<div class="hint">${hint}</div>`}
         </div>
       </ha-card>`;
   }

@@ -93,6 +93,10 @@ recorder:
 
 # evcc's API is unauthenticated on the LAN for mode changes.
 rest_command:
+  # read straight from evcc (response_variable): the REST sensors refresh at most every 10 s
+  evcc_get:
+    url: "http://server.home:7070/api/{{ path }}"
+    method: get
   evcc_set_mode:
     url: "http://server.home:7070/api/loadpoints/1/mode/{{ mode }}"
     method: post
@@ -107,6 +111,14 @@ rest_command:
     content_type: application/json
     payload: >-
       [{% for p in state_attr('sensor.evcc_mode', 'repeatingPlans') or [] %}{{ dict(p, active=active) | tojson }}{{ ',' if not loop.last }}{% endfor %}]
+  # Smart's target (soc %, time "HH:MM" every day) into evcc's repeating plans; creates one if there is none
+  evcc_set_plan_target:
+    url: "http://server.home:7070/api/vehicles/sim_car/plan/repeating"
+    method: post
+    content_type: application/json
+    payload: >-
+      {%- set plans = state_attr('sensor.evcc_mode', 'repeatingPlans') or [{'weekdays': [0, 1, 2, 3, 4, 5, 6], 'tz': now().tzinfo | string, 'active': true}] -%}
+      [{% for p in plans %}{{ dict(p, soc=soc | int, time=time) | tojson }}{{ ',' if not loop.last }}{% endfor %}]
 
 # Read by evcc's simulated car (mounted at /sim); a new token resets its SoC to 10%.
 # Remove together with the sim_* blocks in evcc.yaml once a real charger is in.
@@ -159,20 +171,37 @@ script:
   # Smart's plan: the cheapest quarters with a known price before the car's target, enough
   # for evcc's estimated charge time. evcc's own planner would plan nothing before ~13:00 (it
   # counts on the unpriced night). Fixed until the next tap on Smart, which replans.
+  # Optional soc + time set a new target first (evcc recomputes the charge time at once).
   evcc_smart_plan:
     alias: evcc Smart plan
     mode: queued
+    fields:
+      soc:
+        description: Target battery %, 1-100
+      time:
+        description: Target time every day, HH:MM
     sequence:
-      - action: homeassistant.update_entity # fresh duration and prices
-        target:
-          entity_id: [sensor.evcc_charge_plan, sensor.evcc_price_forecast]
+      - if: "{{ soc is defined and time is defined and (soc | int(0)) in range(1, 101) and time is match('^([01][0-9]|2[0-3]):[0-5][0-9]$') }}"
+        then:
+          - action: rest_command.evcc_set_plan_target
+            data:
+              soc: "{{ soc | int }}"
+              time: "{{ time }}"
+      - action: rest_command.evcc_get
+        data:
+          path: loadpoints/1/plan
+        response_variable: plan
+      - action: rest_command.evcc_get
+        data:
+          path: tariff/grid
+        response_variable: tariff
       - variables:
           base: "{{ (now().timestamp() // 900) | int }}"
-          rates: "{{ state_attr('sensor.evcc_price_forecast', 'rates') or [] }}"
+          rates: "{{ tariff.content.rates or [] }}"
           # shortcut: one rate = one quarter (Zonneplan's quarterly prices); an hourly tariff needs splitting
           picked: >-
-            {%- set target = as_timestamp(states('sensor.evcc_charge_plan'), 0) -%}
-            {%- set n = ((state_attr('sensor.evcc_charge_plan', 'duration') | float(0)) / 900) | round(0, 'ceil') | int -%}
+            {%- set target = as_timestamp(plan.content.planTime, 0) if plan.content.planId else 0 -%}
+            {%- set n = ((plan.content.duration | float(0)) / 900) | round(0, 'ceil') | int -%}
             {%- set ns = namespace(q=[]) -%}
             {%- for r in rates | sort(attribute='value') -%}
               {%- set q = (as_timestamp(r.start) // 900) | int -%}
@@ -197,6 +226,9 @@ script:
           entity_id: input_select.evcc_charge_mode
         data:
           option: smart
+      - action: homeassistant.update_entity # the card and the target-SoC stop read these
+        target:
+          entity_id: [sensor.evcc_charge_plan, sensor.evcc_vehicle_soc]
 
 automation:
   - id: evcc_mode
