@@ -18,19 +18,19 @@
  *   mode_sensor      evcc's own mode (off / now / smart), to see when it has followed a change
  *   power_entity     charge power in W
  *   hours_entity     input_text: painted quarters, "<base>:<hex bitmask>" (see encodeQuarters)
- *   smart_entity     input_text: Smart's quarters, same format + ":<quarter the known prices ended>"
+ *   smart_entity     input_text: Smart's quarters, same format
  *   smart_script     plans Smart and selects it; with soc + time it sets evcc's target first
  *   solar_forecast_entity  attributes.time / .global_tilted_irradiance (Open-Meteo, 15 min, UTC)
  *   solar_kwp        panel peak power for that forecast; base_load = house use (W) it must cover first
  * Colours come from the active theme; charging hours use the oak accent.
  *
  * Deploy: copy to <config>/www/evcc-price-card.js and load it as a dashboard resource
- * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=39.
+ * (Settings > Dashboards > Resources, JavaScript module): /local/evcc-price-card.js?v=46.
  * Not via frontend: extra_module_url: that line lives in the page HTML, which the HA app's
  * service worker cached for hours, pinning the phone to an old version ("Configuration error").
  */
 
-const VERSION = 39;
+const VERSION = 46;
 // Errors go to HA's system log, so they're visible server-side
 // instead of only as an opaque "Configuration error" in someone's browser.
 const report = (level, message) => {
@@ -128,17 +128,6 @@ function quarterly(rates, slots, now) {
   });
 }
 
-// "01:00–04:15, 13:30–14:00" from a set of epoch quarters
-function ranges(quarters) {
-  const out = [];
-  for (const q of [...quarters].sort((a, b) => a - b)) {
-    const last = out[out.length - 1];
-    if (last && last[1] === q) last[1] = q + 1;
-    else out.push([q, q + 1]);
-  }
-  return out.map(([a, b]) => `${hhmm(new Date(a * QUARTER))}–${hhmm(new Date(b * QUARTER))}`).join(", ");
-}
-
 class EvccPriceCard extends HTMLElement {
   setConfig(config) {
     try {
@@ -162,10 +151,7 @@ class EvccPriceCard extends HTMLElement {
         if (b) this._setMode(b.dataset.mode);
         if (e.target.closest("button[data-action=clear]")) this._saveHours(new Set());
       });
-      root.addEventListener("change", (e) => e.target.closest("[data-target]") && this._setTarget());
-      // no re-render under an open picker or a half-typed time; HA's next update redraws after
-      root.addEventListener("focusin", (e) => e.target.closest("[data-target]") && (this._editing = Date.now()));
-      root.addEventListener("input", (e) => e.target.closest("[data-target]") && (this._editing = Date.now()));
+      root.addEventListener("keydown", (e) => e.target.closest?.(".target-hit") && this._targetKey(e));
       root.addEventListener("pointerdown", (e) => {
         this._hover(e);
         this._dragStart(e);
@@ -178,7 +164,10 @@ class EvccPriceCard extends HTMLElement {
       // be read without a finger on the screen
       this.addEventListener("pointerleave", (e) => e.pointerType === "mouse" && this._hover(null));
       root.addEventListener("pointerup", () => this._dragEnd());
-      root.addEventListener("pointercancel", () => this._dragEnd());
+      root.addEventListener("pointercancel", () => this._dragEnd(true));
+      // Chrome ignores touch-action on shapes inside an SVG: without this a finger on the
+      // target handle scrolls the page after a few px and the browser cancels the drag
+      root.addEventListener("touchstart", (e) => e.target.closest?.(".target-hit") && e.preventDefault(), { passive: false });
     }
     this._sig = null;
     if (this._hass) this._render();
@@ -232,7 +221,6 @@ class EvccPriceCard extends HTMLElement {
       this._sig = null;
     }
     if (this._drag) return; // never rebuild the chart under a finger
-    if (this.shadowRoot.activeElement?.closest("[data-target]") && Date.now() - (this._editing || 0) < 10000) return;
     // Re-render only when one of our entities changed.
     const sig = [c.forecast_entity, c.plan_entity, c.soc_entity, c.mode_entity, c.mode_sensor, c.power_entity, c.hours_entity, c.smart_entity, c.solar_forecast_entity]
       .map((e) => hass.states[e]?.last_updated)
@@ -260,30 +248,23 @@ class EvccPriceCard extends HTMLElement {
     });
   }
 
-  // Smart's target from the card: evcc's repeating plan gets it, then Smart replans.
-  // Debounced: a typed time fires change per segment.
-  _setTarget() {
-    const soc = Number(this.shadowRoot.querySelector("[data-target=soc]")?.value);
-    const time = this.shadowRoot.querySelector("[data-target=time]")?.value;
-    if (!(soc >= 1 && soc <= 100) || !/^\d\d:\d\d$/.test(time || "")) return;
+  // Smart's target, dragged on the battery chart: evcc's repeating plan gets it, then Smart replans.
+  _setTarget(soc, time) {
     this._targetPending = { soc, time, until: Date.now() + 15000 };
-    clearTimeout(this._targetTimer);
-    this._targetTimer = setTimeout(() => {
-      this._pending = { mode: "smart", until: Date.now() + 15000 };
-      this._sig = null;
-      this._render();
-      this._hass
-        .callService("script", "turn_on", { entity_id: this._config.smart_script, variables: { soc, time } })
-        .catch(() => {
-          this._targetPending = this._pending = null;
-          this._sig = null;
-          this._render();
-        });
-    }, 800);
+    this._pending = { mode: "smart", until: Date.now() + 15000 };
+    this._sig = null;
+    this._render();
+    this._hass
+      .callService("script", "turn_on", { entity_id: this._config.smart_script, variables: { soc, time } })
+      .catch(() => {
+        this._targetPending = this._pending = null;
+        this._sig = null;
+        this._render();
+      });
   }
 
   _manualHours() {
-    if (this._drag) return this._drag.sel;
+    if (this._drag?.sel) return this._drag.sel;
     const value = this._hoursPending ? this._hoursPending.value : this._hass.states[this._config.hours_entity]?.state;
     return parseQuarters(value);
   }
@@ -339,6 +320,13 @@ class EvccPriceCard extends HTMLElement {
   }
 
   _dragStart(e) {
+    if (e.target.closest?.(".target-hit") && e.button <= 0) {
+      const svg = e.target.closest("svg");
+      e.preventDefault();
+      svg.setPointerCapture(e.pointerId);
+      this._drag = { kind: "target", svg, ...this._target };
+      return;
+    }
     const svg = e.target.closest?.("svg.editable");
     if (!svg || e.button > 0) return;
     e.preventDefault();
@@ -351,18 +339,72 @@ class EvccPriceCard extends HTMLElement {
   }
 
   _dragMove(e) {
-    if (!this._drag) return;
+    if (!this._drag || this._drag.kind === "keys") return;
+    if (this._drag.kind === "target") return this._dragTarget(e);
     const i = this._barAt(this._drag.svg, e.clientX);
     if (i === this._drag.last) return;
     this._paint(this._drag.last, i); // fill the bars a fast swipe skipped
     this._drag.last = i;
   }
 
-  _dragEnd() {
-    if (!this._drag) return;
-    const { sel } = this._drag;
+  _dragEnd(cancelled) {
+    if (!this._drag || this._drag.kind === "keys") return;
+    const d = this._drag;
     this._drag = null;
-    this._saveHours(sel);
+    if (d.kind !== "target") return this._saveHours(d.sel);
+    if (cancelled) return this._render(); // a half-finished drag must not move the target
+    const old = this._target;
+    if (d.soc !== old.soc || d.t !== old.t) this._setTarget(d.soc, hhmm(new Date(d.t)));
+    else this._render();
+  }
+
+  // x = time (quarter boundaries within the chart), y = battery % (steps of 5, 10..100);
+  // redrawn in place so it follows the pointer
+  _dragTarget(e) {
+    const g = this._geo, d = this._drag;
+    const r = d.svg.getBoundingClientRect();
+    const k = Math.min(Math.max(Math.round((e.clientX - r.left - g.left) / g.bw), 1), g.keys.length);
+    const p = (g.socBot - (e.clientY - r.top)) / (g.socBot - g.socTop) * 100;
+    d.t = g.t0 + k * QUARTER;
+    d.soc = Math.min(Math.max(Math.round(p / 5) * 5, 10), 100);
+    d.svg.querySelector("g.target").innerHTML = this._targetInner(d.soc, d.t);
+  }
+
+  // Keyboard: arrows move the handle (15 min / 5 %); saved once the keys rest
+  _targetKey(e) {
+    const step = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [5, 0], ArrowDown: [-5, 0] }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const g = this._geo, { soc, t } = this._target;
+    const next = {
+      soc: Math.min(Math.max(soc + step[0], 10), 100),
+      t: Math.min(Math.max(t + step[1] * QUARTER, g.t0 + QUARTER), g.t0 + g.keys.length * QUARTER),
+    };
+    this._target = next;
+    e.target.closest("svg").querySelector("g.target").innerHTML = this._targetInner(next.soc, next.t);
+    this.shadowRoot.querySelector(".target-hit").focus();
+    this._drag = { kind: "keys" }; // hold re-renders while adjusting
+    clearTimeout(this._keyTimer);
+    this._keyTimer = setTimeout(() => {
+      this._drag = null;
+      this._setTarget(next.soc, hhmm(new Date(next.t)));
+      this.shadowRoot.querySelector(".target-hit")?.focus();
+    }, 800);
+  }
+
+  // Smart's target: dashed lines at its % (battery chart) and time (down through the
+  // prices: later quarters don't count), and a handle where they cross
+  _targetInner(soc, t) {
+    const g = this._geo;
+    const x = g.left + ((t - g.t0) / QUARTER) * g.bw, y = g.ySoc(soc);
+    const text = `${soc}% by ${hhmm(new Date(t))}`;
+    const end = x > g.left + 90; // label left of the handle, unless that runs off the chart
+    const ly = soc > 80 ? y + 16 : y - 9;
+    return `<line class="soc-target" x1="${g.left}" x2="${x}" y1="${y}" y2="${y}"/>
+      <line class="soc-target" x1="${x}" x2="${x}" y1="${g.socTop}" y2="${g.bottomY}"/>
+      <text class="soc-target-label" x="${end ? x - 9 : x + 9}" y="${ly}" text-anchor="${end ? "end" : "start"}">${text}</text>
+      <circle class="target-dot" cx="${x}" cy="${y}" r="6"/>
+      <circle class="target-hit" cx="${x}" cy="${y}" r="22" tabindex="0" role="slider" aria-label="Charging target" aria-valuemin="10" aria-valuemax="100" aria-valuenow="${soc}" aria-valuetext="${text}"><title>Drag to set the target: time across, battery % up and down</title></circle>`;
   }
 
   _paint(from, to) {
@@ -392,53 +434,14 @@ class EvccPriceCard extends HTMLElement {
     return [];
   }
 
-  _status(st, slots) {
-    let text = this._modeStatus(st, slots);
-    // evcc's own start/stop timers (e.g. the 3-min wind-down after leaving Fast)
-    if (st.transition === "fetching") text += "…";
-    else if (st.transition) text += !st.pvLeft ? `, ${st.transition}…` : `, ${st.transition} in ${st.pvLeft < 60 ? `${st.pvLeft} s` : `${Math.ceil(st.pvLeft / 60)} min`}`;
-    return text;
-  }
-
-  _modeStatus(st, slots) {
-    const { soc, mode, power, planSoc, planTime } = st;
-    const kw = power > 0 ? `charging at ${(power / 1000).toFixed(1)} kW` : "";
-    if (st.connected === false) return mode === "solar" ? "Solar: not plugged in, charges on 1 phase from surplus" : "Car not plugged in";
-    if (mode === "off") return "Off, not charging";
-    if (mode === "manual") {
-      if (!st.manual.size) return "Manual: no hours set, so the car stays off";
-      return `Manual${kw ? `, ${kw}` : ""}: ${ranges(st.manual)}`;
-    }
-    if (soc >= 100) return "Car is full";
-    if (mode === "solar") {
-      if (kw) return `Solar, ${kw} from surplus`;
-      return st.solarNext ? `Solar: waiting for surplus, expected from ${hhmm(new Date(st.solarNext))}` : "Solar: no surplus expected in the next 24 h";
-    }
-    if (mode === "fast") {
-      if (!kw) return st.transition ? "Fast" : "Fast: waiting for the car";
-      const full = slots[slots.length - 1]; // the mode projection comes after the live slot
-      return full && full[1] - full[0] > 60e3 ? `Fast, ${kw}, full around ${hhmm(new Date(full[1]))}` : `Fast, ${kw}`;
-    }
-    // Smart: the plan comes first; live charging (surplus, or evcc's 3-min wind-down after
-    // leaving Fast) is added, so a charging car never hides why no quarters are planned
-    const live = kw ? `. Now ${kw}` : "";
-    if (!planTime) return st.transition === "fetching" ? "Smart: fetching the plan" : kw ? `Smart, ${kw}` : "Smart: no charging target set in evcc";
-    const t = hhmm(planTime);
-    // planned before the prices reached the target, and they reach further now
-    const newer = st.smartKnown && st.smartKnown < planTime && st.knownUntil > st.smartKnown ? ". Newer prices are in: tap Smart to replan" : "";
-    const ahead = [...st.smart].filter((q) => (q + 1) * QUARTER > Date.now());
-    if (!ahead.length) return `Plan ${planSoc}% by ${t}, ${soc >= planSoc ? "already reached" : "nothing planned"}${live}${newer}`;
-    return `Plan ${planSoc}% by ${t}, charges from ${hhmm(new Date(Math.min(...ahead) * QUARTER))}${live}${newer}`;
-  }
-
   _chart(hours, editable, st) {
     const known = hours.filter((h) => h.value !== null);
     // Two panels in one SVG so the quarter columns line up exactly:
-    //   battery %   socTop..socBot   (short)
+    //   battery %   socTop..socBot   (tall enough to drag the target in 5 % steps by finger)
     //   prices      pTop..H-bottom   (bars)
     // 40 = card padding; left gutter carries both axes' labels.
     const W = Math.max((this._w || 720) - 40, 240), left = 40, right = 6, bottom = 22;
-    const socTop = 10, socBot = 62, pTop = socBot + 36, H = pTop + 134 + bottom;
+    const socTop = 10, socBot = 110, pTop = socBot + 36, H = pTop + 134 + bottom;
     const plotR = W - right;
     const vals = known.length ? known.map((h) => h.value) : [0.3];
     const max = Math.max(...vals), min = Math.min(0, ...vals);
@@ -449,7 +452,7 @@ class EvccPriceCard extends HTMLElement {
     const ySoc = (p) => socBot - (socBot - socTop) * (p / 100);
     const solar = st.mode === "solar" && hours.some((h) => h.pv !== null);
     const pv = solar ? this._pvArea(hours, left, bw, pTop, H - bottom) : { fill: "", line: "" };
-    this._geo = { left, bw, plotR, keys: hours.map((h) => h.q), items: hours, solar };
+    this._geo = { left, bw, plotR, keys: hours.map((h) => h.q), items: hours, solar, t0: hours[0].start, socTop, socBot, ySoc, bottomY: H - bottom };
     this._hoverI = null;
     // gaps shrink with the bars: ~9 px bars on desktop, ~3 px on a phone
     const gap = Math.min(1.5, bw * 0.25);
@@ -487,6 +490,7 @@ class EvccPriceCard extends HTMLElement {
         ${socGrid}${grid}${pv.fill}${bars}${pv.line}
         ${this._socLine(hours, st, nowX, left, bw, ySoc, socBot, plotR)}
         ${unknownNote}
+        ${st.mode === "smart" && this._target ? `<g class="target">${this._targetInner(this._target.soc, this._target.t)}</g>` : ""}
         <g class="tip" visibility="hidden">
           <line y1="${pTop - 4}" y2="${H - bottom}"/>
           <text y="${socBot + 22}"></text>
@@ -517,17 +521,12 @@ class EvccPriceCard extends HTMLElement {
     const line = pts.map(([x, p], i) => `${i ? "L" : "M"}${x.toFixed(1)},${ySoc(p).toFixed(1)}`).join("");
     const area = `${line}L${pts[pts.length - 1][0].toFixed(1)},${socBot}L${nowX.toFixed(1)},${socBot}Z`;
     const [sx, sp] = pts[0], [ex, ep] = pts[pts.length - 1];
-    // target of Smart's plan as a dashed oak line
-    const target = st.mode === "smart" && st.planSoc
-      ? `<line class="soc-target" x1="${left}" x2="${plotR}" y1="${ySoc(st.planSoc)}" y2="${ySoc(st.planSoc)}"/>
-         <text class="soc-target-label" x="${plotR - 2}" y="${ySoc(st.planSoc) - 4}">target ${st.planSoc}%</text>`
-      : "";
     // start label sits above the dot; the end label only when the line actually moved
     // above the line, except near the top where it would sit on the 100% grid line
     const labelY = (p) => (p > 85 ? ySoc(p) + 13 : ySoc(p) - 6);
     const startLabel = `<text class="soc-now" x="${sx + 6}" y="${labelY(sp)}">${Math.round(sp)}%</text>`;
     const endLabel = ep - sp >= 3 ? `<text class="soc-end" x="${Math.min(ex, plotR) - 2}" y="${labelY(ep)}">${Math.round(ep)}%</text>` : "";
-    return `<path class="soc-area" d="${area}"/>${target}<path class="soc-line" d="${line}"/>
+    return `<path class="soc-area" d="${area}"/><path class="soc-line" d="${line}"/>
       <circle class="soc-dot" cx="${sx}" cy="${ySoc(sp)}" r="3"/>${startLabel}${endLabel}`;
   }
 
@@ -610,8 +609,6 @@ class EvccPriceCard extends HTMLElement {
       mode: this._pending?.mode ?? this._mode(),
       manual: this._manualHours(),
       smart: parseQuarters(s[c.smart_entity]?.state),
-      smartKnown: (Number(String(s[c.smart_entity]?.state).split(":")[2]) || 0) * QUARTER || null,
-      knownUntil: rates.length ? new Date(rates[rates.length - 1].end) : null,
       power: Number(s[c.power_entity]?.state) || 0,
       pvAction: socAttr.pvAction,
       maxPower: Number(s[c.plan_entity]?.attributes?.power) || 0,
@@ -624,12 +621,12 @@ class EvccPriceCard extends HTMLElement {
       planTime,
     };
     const tp = this._targetPending;
-    if (tp && ((st.planSoc === tp.soc && planTime && hhmm(planTime) === tp.time) || Date.now() > tp.until)) this._targetPending = null;
-    // evcc is still acting on a change: a start/stop timer runs (pvAction enable/disable,
-    // pvRemaining s as of the sensor's last update). Counted down here between polls.
-    const pvLeft = Math.max(0, Math.round((Number(socAttr.pvRemaining) || 0) - (Date.now() - Date.parse(s[c.soc_entity]?.last_updated)) / 1000));
-    st.pvLeft = pvLeft;
-    // stays on after the countdown hits 0 until evcc reports the stop/start (its next cycle)
+    // Smart's target as configured in evcc (its daily repeating plan); evcc's effectivePlan*
+    // go empty once the car is past the target, so they can't place the handle
+    const rp = s[c.mode_sensor]?.attributes?.repeatingPlans?.[0];
+    if (tp && ((rp?.soc === tp.soc && rp?.time === tp.time) || Date.now() > tp.until)) this._targetPending = null;
+    // evcc is still acting on a change: its start/stop timer runs (pvAction enable/disable);
+    // stays on after the timer until evcc reports the stop/start (its next cycle)
     st.transition = st.pvAction === "disable" && st.power > 0 ? "stopping" : st.pvAction === "enable" && !st.power ? "starting" : null;
     // Wh per battery % from evcc's own remaining-energy estimate (charging losses included)
     st.whPerPct = st.remainingWh && st.limit > st.soc ? st.remainingWh / (st.limit - st.soc) : 650;
@@ -642,21 +639,14 @@ class EvccPriceCard extends HTMLElement {
     const changed = Math.max(...[c.mode_entity, c.mode_sensor, c.hours_entity, c.smart_entity].map((e) => Date.parse(s[e]?.last_changed) || 0));
     const wantsNow = this._modeSlots(st, now).some(([a, b]) => a <= now.getTime() && now.getTime() < b);
     const recent = Date.now() - changed < 90e3;
-    // after leaving Solar, evcc's re-enabled plan reaches HA on its next 30 s poll
-    if (st.mode === "smart" && !st.planTime && recent) {
-      st.transition = "fetching";
-      st.pvLeft = null;
-    }
     if (!st.transition && !st.power && st.connected && recent && wantsNow) {
       st.transition = "starting";
-      st.pvLeft = null;
     }
     // Stopping covers evcc's whole wind-down: from the change until its stop timer starts
     // (a cycle later), and after the timer until the power reading actually drops to 0.
     // Not for Solar: there, charging right after the switch can be real surplus.
     if (!st.transition && st.power > 0 && st.mode !== "solar" && !wantsNow && (recent || Date.now() < (this._stopUntil || 0))) {
       st.transition = "stopping";
-      st.pvLeft = 0;
     }
     if (st.transition === "stopping") this._stopUntil = Date.now() + 60e3;
     if (!st.power) this._stopUntil = 0;
@@ -675,11 +665,11 @@ class EvccPriceCard extends HTMLElement {
         h.charging = true;
         h.frac = Math.max(h.frac, ((h.start + QUARTER - Math.max(h.start, now.getTime())) / HOUR) * (w / st.maxPower));
       }
-      st.solarNext = hours.find((h) => h.charging && h.start > now.getTime())?.start;
     }
     // Wh charged per quarter at max power until the car reaches its limit (Smart: its target,
     // where HA stops it); feeds the battery line and the session price, so the two always agree
-    const stopAt = st.mode === "smart" && st.planSoc ? Math.min(st.limit, st.planSoc) : st.limit;
+    const planSoc = this._targetPending?.soc ?? rp?.soc ?? st.planSoc; // a just-dragged target before evcc reports it
+    const stopAt = st.mode === "smart" && planSoc ? Math.min(st.limit, planSoc) : st.limit;
     let room = isNaN(soc) ? Infinity : Math.max((Math.max(stopAt, soc) - soc) * st.whPerPct, 0);
     for (const h of hours) {
       h.wh = Math.min(h.frac * st.maxPower, room);
@@ -691,19 +681,20 @@ class EvccPriceCard extends HTMLElement {
     const hint = editable
       ? "Drag across the hours the car should charge. Clear removes them: no hours means off."
       : "Smart: cheapest quarters. Manual: paint them yourself. Fast: full power now. Solar: own surplus only.";
-    // Smart: its target, editable; a change replans
-    const tSoc = this._targetPending?.soc ?? st.planSoc ?? 80;
-    const tTime = this._targetPending?.time ?? (st.planTime ? hhmm(st.planTime) : "07:00");
-    const socs = Array.from({ length: 17 }, (_, i) => 20 + i * 5);
-    if (!socs.includes(tSoc)) socs.push(tSoc), socs.sort((a, b) => a - b);
-    const target = st.mode === "smart"
-      ? `<div class="target">
-          <label>Charge to <select data-target="soc" aria-label="Target battery">${socs.map((v) => `<option value="${v}" ${v === tSoc ? "selected" : ""}>${v}%</option>`).join("")}</select></label>
-          <label>by <input type="time" data-target="time" step="900" value="${tTime}" aria-label="Target time" /></label>
-        </div>`
-      : "";
+    // Smart's target for the handle on the chart; a pending drag wins until evcc reports it.
+    // shortcut: evcc's target is a daily HH:MM, so its next occurrence always lies within the 24 h chart
+    const pending = this._targetPending; // read again: cleared above once evcc reported it
+    const nextAt = (time) => {
+      const [h, m] = time.split(":").map(Number), d = new Date(now);
+      d.setHours(h, m, 0, 0);
+      if (d <= now) d.setDate(d.getDate() + 1);
+      return d.getTime();
+    };
+    this._target = pending ? { soc: pending.soc, t: nextAt(pending.time) }
+      : rp ? { soc: rp.soc, t: nextAt(rp.time) } : { soc: 80, t: nextAt("07:00") };
 
     this._scheduleTick(st.transition || this._pending);
+    const refocus = this.shadowRoot.activeElement?.classList?.contains("target-hit");
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; --accent: var(--accent-color); --ink: var(--primary-text-color); --muted: var(--secondary-text-color);
@@ -711,7 +702,6 @@ class EvccPriceCard extends HTMLElement {
         ha-card { padding: 20px; }
         .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
         .title { font-size: 16px; font-weight: 500; color: var(--ink); line-height: 1.3; }
-        .status { font-size: 13px; color: var(--muted); margin-top: 2px; line-height: 1.4; text-wrap: pretty; }
         .session { text-align: right; flex: none; }
         .session b { font-size: 26px; font-weight: 400; color: var(--ink); line-height: 1.1; letter-spacing: -0.01em; }
         .session span { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -734,7 +724,7 @@ class EvccPriceCard extends HTMLElement {
         .soc-dot { fill: var(--ink); pointer-events: none; }
         .soc-area { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: none; pointer-events: none; }
         .soc-target { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 4 3; pointer-events: none; }
-        .soc-target-label { font-size: 11px; fill: var(--accent); text-anchor: end; pointer-events: none; }
+        .soc-target-label { font-size: 11px; font-weight: 500; fill: var(--accent); pointer-events: none; }
         .soc-now { font-size: 11px; font-weight: 500; fill: var(--ink); pointer-events: none;
                    paint-order: stroke; stroke: var(--ha-card-background, var(--card-background-color)); stroke-width: 4px; stroke-linejoin: round; }
         .bar.hover { fill: color-mix(in srgb, var(--ink) 45%, transparent); }
@@ -778,20 +768,15 @@ class EvccPriceCard extends HTMLElement {
         @media (prefers-reduced-motion: reduce) { .modes button, .bar { transition: none; } .modes button.busy, .cap.switching .st { animation: none; } }
         .foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }
         .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
-        .target { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 14px; color: var(--muted); }
-        .target label { display: flex; align-items: center; gap: 8px; }
-        .target select, .target input {
-          font: inherit; color: var(--ink); background: var(--secondary-background-color);
-          border: 0; border-radius: 10px; padding: 0 10px; min-height: 36px; color-scheme: light dark;
-        }
-        .target select:focus-visible, .target input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .target-dot { fill: var(--accent); stroke: var(--card-background-color, var(--ha-card-background)); stroke-width: 2; pointer-events: none; }
+        .target-hit { fill: transparent; cursor: grab; outline: none; }
+        .target-hit:focus-visible { stroke: var(--accent); stroke-width: 2; }
         .modes button.on:disabled { opacity: 0.55; cursor: default; }
       </style>
       <ha-card>
         <div class="head">
           <div>
             <div class="title">${c.title}</div>
-            <div class="status">${this._status(st, slots)}</div>
           </div>
           ${session}
         </div>
@@ -823,9 +808,10 @@ class EvccPriceCard extends HTMLElement {
           }).join("")}
         </div>
         <div class="foot">
-          ${target || `<div class="hint">${hint}</div>`}
+          <div class="hint">${hint}</div>
         </div>
       </ha-card>`;
+    if (refocus) this.shadowRoot.querySelector(".target-hit")?.focus();
   }
 }
 

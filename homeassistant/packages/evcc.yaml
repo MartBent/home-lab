@@ -36,7 +36,7 @@ rest:
         state_class: measurement
         json_attributes_path: "$.loadpoints[0]"
         json_attributes: [effectivePlanSoc, effectivePlanTime, planProjectedStart, planProjectedEnd, charging, chargeRemainingEnergy, effectiveLimitSoc,
-                          connected, phasesConfigured, phasesActive, minCurrent, maxCurrent, pvAction, pvRemaining]
+                          connected, phasesConfigured, phasesActive, minCurrent, maxCurrent, pvAction]
 
       - name: evcc Mode
         unique_id: evcc_mode
@@ -161,8 +161,7 @@ input_text:
   evcc_manual_hours:
     name: evcc Manual hours
     max: 255
-  # Smart: the quarters script.evcc_smart_plan picked, same format plus ":<quarter>" =
-  # where the known prices ended when it planned (the card offers a replan once they reach further).
+  # Smart: the quarters script.evcc_smart_plan picked, same format.
   evcc_smart_hours:
     name: evcc Smart hours
     max: 255
@@ -215,7 +214,7 @@ script:
               {%- for b in range(4) if base + d * 4 + b in picked %}{% set v.n = v.n + 8 // 2 ** b %}{% endfor -%}
               {%- set ns.hex = ns.hex ~ '0123456789abcdef'[v.n] -%}
             {%- endfor -%}
-            {{ base }}:{{ ns.hex }}:{{ ((as_timestamp((rates | last).end) // 900) | int) if rates else base }}
+            {{ base }}:{{ ns.hex }}
       - action: input_text.set_value
         target:
           entity_id: input_text.evcc_smart_hours
