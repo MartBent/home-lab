@@ -375,7 +375,7 @@ automation:
         data:
           title: Welcome home. How should the car charge?
           message: >-
-            Smart: the cheapest hours to {{ plan.soc }}% by {{ plan.time }}, for work tomorrow{{
+            Smart: the cheapest hours to {{ plan.soc }}% by {{ plan.time }}{{
               (', about €%.2f (%.1f kWh at €%.3f/kWh)' | format(smart_kwh * smart_price, smart_kwh, smart_price)) if smart_kwh > 0 and smart_price > 0
               else (', already there' if smart_kwh == 0 else '') }}.
             Solar: only your own surplus, about {{ sun_kwh }} kWh of spare sun expected tomorrow.
