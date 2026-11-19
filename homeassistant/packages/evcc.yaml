@@ -96,7 +96,7 @@ rest_command:
   evcc_set_mode:
     url: "http://server.home:7070/api/loadpoints/1/mode/{{ mode }}"
     method: post
-  # only ever called while the car is unplugged, see automation evcc_solar
+  # only ever called while the car is unplugged, see automation evcc_mode
   evcc_set_phases:
     url: "http://server.home:7070/api/loadpoints/1/phases/{{ phases }}"
     method: post
@@ -117,36 +117,23 @@ shell_command:
   evcc_unplug_simulated_car: "mkdir -p /config/evcc-sim && echo 0 > /config/evcc-sim/plug"
 
 template:
-  - select:
-      - name: evcc Charge mode
-        unique_id: evcc_charge_mode
-        icon: mdi:ev-station
-        state: "{{ states('sensor.evcc_mode') }}"
-        # take the chosen mode at once; waiting for the REST refresh hits its 10 s
-        # cooldown on a second tap. The 30 s poll keeps it honest.
-        optimistic: true
-        options: "{{ ['off', 'smart', 'now'] }}"
-        select_option:
-          - action: rest_command.evcc_set_mode
-            data:
-              mode: "{{ option }}"
-          - action: homeassistant.update_entity
-            target:
-              entity_id: sensor.evcc_mode
-    button:
+  - button:
       - name: evcc Empty simulated car
         unique_id: evcc_empty_simulated_car
         icon: mdi:car-arrow-left
         press:
           - action: shell_command.evcc_empty_simulated_car
 
-# Manual mode: quarter-hours painted on the dashboard graph (www/evcc-price-card.js).
-# Stored as "<base>:<hex>": base = epoch quarter (unix time // 900) of the first bit,
-# then one bit per quarter, most significant bit first per hex digit (max 32 chars).
+# The charge mode lives in HA; automation evcc_mode turns it into evcc settings.
+# Fast, Smart and Manual charge on 3 phases, Solar on 1. smart comes first so a fresh
+# install starts there, not in fast.
+input_select:
+  evcc_charge_mode:
+    name: evcc Charge mode
+    icon: mdi:ev-station
+    options: [smart, fast, manual, solar]
+
 input_boolean:
-  evcc_manual:
-    name: evcc Manual schedule
-    icon: mdi:gesture-tap-hold
   # Simulated car's plug, written to /sim/plug by automation evcc_simulated_car_plug.
   # A plain toggle on purpose: an optimistic template switch went stale. evcc sees a change
   # within its 30 s cycle; the card shows evcc's own "connected".
@@ -154,49 +141,73 @@ input_boolean:
     name: evcc Simulated car plugged in
     icon: mdi:ev-plug-type2
     initial: true # matches /sim/plug's default; an HA restart plugs the simulated car back in
-  # Solar: evcc Smart with the repeating plans off (surplus only), on 1 phase.
-  evcc_solar:
-    name: evcc Solar only
-    icon: mdi:solar-power-variant
 
+# Manual: quarter-hours painted on the dashboard graph (www/evcc-price-card.js).
+# Stored as "<base>:<hex>": base = epoch quarter (unix time // 900) of the first bit,
+# then one bit per quarter, most significant bit first per hex digit (max 32 chars).
 input_text:
   evcc_manual_hours:
     name: evcc Manual hours
     max: 255
 
 automation:
-  - id: evcc_manual_schedule
-    alias: evcc manual schedule
+  - id: evcc_mode
+    alias: evcc mode
     description: >-
-      While Manual is on, charge (evcc "now") only in the quarter-hours painted on
-      the dashboard graph and keep evcc off outside them. Nothing painted = off.
+      Drives evcc from input_select.evcc_charge_mode. Fast = evcc "now". Smart = "now" in
+      the quarters evcc's planner picked for the car's target (it keeps planning while
+      off), "off" otherwise: no solar logic, so no 3-min wind-down. Manual = "now" in the
+      painted quarters, "off" otherwise. Solar = evcc "smart" with the repeating plans off,
+      i.e. surplus only. Phases: 3, Solar 1, only ever sent while the car is unplugged
+      (evcc applies them at the next plug-in, before power flows): the Kia e-Niro can
+      short L1-L2 when a session moves from 1 to 3 phases.
     mode: queued
     max: 5
     triggers:
-      - trigger: time_pattern
-        minutes: /15
+      - trigger: time_pattern # plan slots can be shorter than a quarter
+        minutes: /1
         seconds: 5
       - trigger: state
         entity_id:
+          - input_select.evcc_charge_mode
           - input_text.evcc_manual_hours
-          - input_boolean.evcc_manual
-      # evcc's real mode drifted (e.g. a racing mode change): put it back
+          - sensor.evcc_charge_plan # new plan slots
+          - sensor.evcc_mode # evcc's real mode drifted: put it back
       - trigger: state
-        entity_id: sensor.evcc_mode
+        entity_id: sensor.evcc_vehicle_soc
+        attribute: connected
+        to: false
       - trigger: homeassistant
         event: start
     conditions:
-      - condition: state
-        entity_id: input_boolean.evcc_manual
-        state: "on"
+      - "{{ states('input_select.evcc_charge_mode') in ['smart', 'fast', 'manual', 'solar'] }}"
     actions:
       - variables:
+          mode: "{{ states('input_select.evcc_charge_mode') }}"
+          t: "{{ now().timestamp() }}"
+          planned: >-
+            {%- set ns = namespace(on=false) -%}
+            {%- for p in state_attr('sensor.evcc_charge_plan', 'plan') or [] -%}
+              {%- if as_timestamp(p.start) <= t < as_timestamp(p.end) %}{% set ns.on = true %}{% endif -%}
+            {%- endfor -%}
+            {{ ns.on }}
+          painted: >-
+            {%- set s = states('input_text.evcc_manual_hours') -%}
+            {%- set bits = s.split(':')[1] if s is match('^[0-9]+:[0-9a-f]*$') else '' -%}
+            {%- set i = (t // 900) | int - (s.split(':')[0] | int(0)) -%}
+            {{ 0 <= i < bits | length * 4 and ((bits[i // 4] | int(0, 16)) // 2 ** (3 - i % 4)) % 2 == 1 }}
           want: >-
-            {% set s = states('input_text.evcc_manual_hours') %}
-            {% set bits = s.split(':')[1] if s is match('^[0-9]+:[0-9a-f]*$') else '' %}
-            {% set i = (now().timestamp() // 900) | int - (s.split(':')[0] | int(0)) %}
-            {% if 0 <= i < bits | length * 4 and ((bits[i // 4] | int(0, 16)) // 2 ** (3 - i % 4)) % 2 %}now{% else %}off{% endif %}
-      # compare with what evcc reports, not the optimistic select, which can be stale
+            {% if mode == 'fast' %}now{% elif mode == 'smart' %}{{ 'now' if planned | bool else 'off' }}{% elif mode == 'manual' %}{{ 'now' if painted | bool else 'off' }}{% else %}smart{% endif %}
+          plans_active: "{{ mode != 'solar' }}"
+          phases: "{{ 1 if mode == 'solar' else 3 }}"
+      # Solar must not charge from the grid for the plan; the other modes keep it so Smart has a target
+      - if: >-
+          {{ (state_attr('sensor.evcc_mode', 'repeatingPlans') or []) | selectattr('active', 'ne', plans_active) | list | count > 0 }}
+        then:
+          - action: rest_command.evcc_set_plans_active
+            data:
+              active: "{{ plans_active }}"
+      # compare with what evcc reports (sensor), not with what HA last asked
       - if: "{{ states('sensor.evcc_mode') != want }}"
         then:
           - action: rest_command.evcc_set_mode
@@ -205,48 +216,6 @@ automation:
           - action: homeassistant.update_entity
             target:
               entity_id: sensor.evcc_mode
-
-  - id: evcc_solar
-    alias: evcc solar mode and phases
-    description: >-
-      Solar = evcc Smart with the repeating plans off, so it charges from surplus only,
-      on 1 phase (starts at ~1.4 kW instead of ~4.1 kW on 3). The phase setting is only
-      sent while the car is unplugged; evcc applies it at the next plug-in, before power
-      flows. Never switch phases with a car connected: the Kia e-Niro can short L1-L2
-      when a session moves from 1 to 3 phases.
-    mode: queued
-    max: 5
-    triggers:
-      - trigger: state
-        entity_id: input_boolean.evcc_solar
-        to: ["on", "off"] # quoted: bare on/off are YAML booleans
-        id: solar
-      - trigger: state
-        entity_id: sensor.evcc_vehicle_soc
-        attribute: connected
-        to: false
-      - trigger: homeassistant
-        event: start
-    actions:
-      - variables:
-          solar: "{{ is_state('input_boolean.evcc_solar', 'on') }}"
-          phases: "{{ 1 if solar else 3 }}"
-      - if: "{{ trigger.id == 'solar' }}"
-        then:
-          - action: rest_command.evcc_set_plans_active
-            data:
-              active: "{{ not solar }}"
-          - if: "{{ solar }}"
-            then:
-              - action: input_boolean.turn_off
-                target:
-                  entity_id: input_boolean.evcc_manual
-              - action: rest_command.evcc_set_mode
-                data:
-                  mode: smart
-              - action: homeassistant.update_entity
-                target:
-                  entity_id: sensor.evcc_mode
       # strictly false: an unavailable sensor (None) must never count as unplugged
       - if: "{{ state_attr('sensor.evcc_vehicle_soc', 'connected') is sameas false and state_attr('sensor.evcc_vehicle_soc', 'phasesConfigured') != phases }}"
         then:
