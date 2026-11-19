@@ -341,6 +341,22 @@ automation:
     actions:
       - variables:
           plan: "{{ (state_attr('sensor.evcc_mode', 'repeatingPlans') or [{'soc': 80, 'time': '07:00'}]) | first }}"
+          # Smart's cost to the target: the energy still needed (evcc's Wh per %, losses included) at the
+          # average price of the quarters script.evcc_smart_plan would pick (cheapest known before the target)
+          smart_kwh: >-
+            {%- set soc = states('sensor.evcc_vehicle_soc') | float(0) -%}
+            {%- set a = state_attr('sensor.evcc_vehicle_soc', 'chargeRemainingEnergy') | float(0) -%}
+            {%- set limit = state_attr('sensor.evcc_vehicle_soc', 'effectiveLimitSoc') | float(100) -%}
+            {{ (([plan.soc - soc, 0] | max) * (a / (limit - soc) if a > 0 and limit > soc else 650) / 1000) | round(1) }}
+          smart_price: >-
+            {%- set target = as_timestamp(states('sensor.evcc_charge_plan'), 0) -%}
+            {%- set n = ((state_attr('sensor.evcc_charge_plan', 'duration') | float(0)) / 900) | round(0, 'ceil') | int -%}
+            {%- set base = (now().timestamp() // 900) * 900 -%}
+            {%- set ns = namespace(p=[]) -%}
+            {%- for r in (state_attr('sensor.evcc_price_forecast', 'rates') or []) | sort(attribute='value') -%}
+              {%- if ns.p | count < n and as_timestamp(r.start) >= base and as_timestamp(r.end) <= target %}{% set ns.p = ns.p + [r.value] %}{% endif -%}
+            {%- endfor -%}
+            {{ ((ns.p | sum) / (ns.p | count)) | round(3) if ns.p else 0 }}
           # tomorrow's sun beyond the house's base load, same sums as the card: W = W/m2 x 4 kWp x 0.85
           # losses, minus 300 W; Open-Meteo's times are UTC
           # shortcut: kWp and base load copied from www/evcc-price-card.js (solar_kwp, base_load); move both when the real panels are known
@@ -359,7 +375,9 @@ automation:
         data:
           title: Welcome home. How should the car charge?
           message: >-
-            Smart: the cheapest hours to {{ plan.soc }}% by {{ plan.time }}, for work tomorrow.
+            Smart: the cheapest hours to {{ plan.soc }}% by {{ plan.time }}, for work tomorrow{{
+              (', about €%.2f (%.1f kWh at €%.3f/kWh)' | format(smart_kwh * smart_price, smart_kwh, smart_price)) if smart_kwh > 0 and smart_price > 0
+              else (', already there' if smart_kwh == 0 else '') }}.
             Solar: only your own surplus, about {{ sun_kwh }} kWh of spare sun expected tomorrow.
           data:
             tag: evcc_charge_choice # a later question replaces this one
